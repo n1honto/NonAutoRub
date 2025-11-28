@@ -1,0 +1,980 @@
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import tkinter.font as tkfont
+
+from consensus import MasterchainConsensus  # type: ignore
+from platform import DigitalRublePlatform  # type: ignore
+
+
+class DigitalRubleApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Имитационная модель цифрового рубля")
+        self.geometry("1600x900")
+        # Увеличенный шрифт по умолчанию для всей программы
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=11)
+        self.option_add("*Font", default_font)
+        heading_font = tkfont.nametofont("TkHeadingFont")
+        heading_font.configure(size=12, weight="bold")
+        self.platform = DigitalRublePlatform()
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self._init_state()
+        self._build_tabs()
+        self.refresh_all()
+
+    def _init_state(self) -> None:
+        self.user_table = None
+        self.tx_table = None
+        self.offline_table = None
+        self.contract_table = None
+        self.consensus_table = None
+        self.consensus_canvas = None
+        self.ledger_canvas = None
+        self.block_table = None
+        self.activity_text = None
+        self.bank_tx_table = None
+        self.issuance_table = None
+        self.cbr_log = None
+        self.wallet_user_combo = None
+        self.offline_user_combo = None
+        self.offline_receiver_combo = None
+        self.sender_combo = None
+        self.receiver_combo = None
+        self.channel_combo = None
+        self.contract_sender_combo = None
+        self.contract_receiver_combo = None
+        self.contract_bank_combo = None
+        self.bank_combo = None
+        # переменные для анимации консенсуса и реестра
+        self._consensus_anim_events = []
+        self._consensus_anim_index = 0
+        self._consensus_anim_job = None
+        self._consensus_active_actor = None
+        self._consensus_active_state = None
+        self._consensus_active_event = None
+        self._ledger_last_rows = []
+        self._ledger_active_height = None
+
+    # region --- UI builders -------------------------------------------------------
+    def _build_tabs(self) -> None:
+        self._build_management_tab()
+        self._build_user_tab()
+        self._build_bank_tab()
+        self._build_cbr_tab()
+        self._build_user_data_tab()
+        self._build_tx_data_tab()
+        self._build_offline_tab()
+        self._build_contracts_tab()
+        self._build_consensus_tab()
+        self._build_ledger_tab()
+        self._build_activity_tab()
+
+    def _build_management_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Управление")
+        controls = ttk.LabelFrame(tab, text="Создание участников")
+        controls.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(controls, text="Физические лица:").grid(row=0, column=0, padx=5, pady=5)
+        fl_entry = ttk.Entry(controls, width=5)
+        fl_entry.insert(0, "5")
+        fl_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(controls, text="Юридические лица:").grid(row=0, column=2, padx=5, pady=5)
+        yl_entry = ttk.Entry(controls, width=5)
+        yl_entry.insert(0, "3")
+        yl_entry.grid(row=0, column=3, padx=5, pady=5)
+
+        ttk.Label(controls, text="Банки (ФО):").grid(row=0, column=4, padx=5, pady=5)
+        bank_entry = ttk.Entry(controls, width=5)
+        bank_entry.insert(0, "2")
+        bank_entry.grid(row=0, column=5, padx=5, pady=5)
+
+        ttk.Label(controls, text="Гос.организации:").grid(row=0, column=6, padx=5, pady=5)
+        gov_entry = ttk.Entry(controls, width=5)
+        gov_entry.insert(0, "1")
+        gov_entry.grid(row=0, column=7, padx=5, pady=5)
+
+        def seed_entities() -> None:
+            try:
+                self.platform.create_banks(int(bank_entry.get()))
+                self.platform.create_users(int(fl_entry.get()), "INDIVIDUAL")
+                self.platform.create_users(int(yl_entry.get()), "BUSINESS")
+                self.platform.create_government_institutions(int(gov_entry.get()))
+                self.refresh_all()
+                messagebox.showinfo("Управление", "Данные успешно сгенерированы")
+            except Exception as exc:
+                messagebox.showerror("Ошибка", str(exc))
+
+        ttk.Button(controls, text="Создать", command=seed_entities).grid(
+            row=0, column=8, padx=10, pady=5
+        )
+
+        def reset_entities() -> None:
+            if not messagebox.askyesno(
+                "Сброс модели",
+                "Вы уверены, что хотите полностью очистить все данные модели?\n"
+                "Будут удалены пользователи, банки, транзакции, смарт‑контракты и журналы.",
+            ):
+                return
+            try:
+                self.platform.reset_state()
+                self.refresh_all()
+                messagebox.showinfo("Сброс модели", "Все данные имитационной модели очищены")
+            except Exception as exc:
+                messagebox.showerror("Ошибка", str(exc))
+
+        ttk.Button(controls, text="Очистить данные", command=reset_entities).grid(
+            row=0, column=9, padx=10, pady=5
+        )
+
+    def _build_user_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Пользователь")
+        for col in range(4):
+            tab.columnconfigure(col, weight=1, uniform="usercol")
+
+        wallet_frame = ttk.LabelFrame(tab, text="Цифровые кошельки")
+        wallet_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        for col in range(4):
+            wallet_frame.columnconfigure(col, weight=1, uniform="walletcol")
+
+        self.wallet_user_combo = ttk.Combobox(wallet_frame, state="readonly")
+        self.wallet_user_combo.grid(row=0, column=0, padx=5, pady=5, columnspan=2, sticky="ew")
+        ttk.Button(wallet_frame, text="Открыть кошелек", command=self._ui_open_wallet).grid(
+            row=1, column=0, padx=5, pady=5, sticky="ew"
+        )
+        ttk.Label(wallet_frame, text="Сумма конвертации:").grid(row=1, column=1, padx=5, pady=5, sticky="e")
+        self.convert_amount = ttk.Entry(wallet_frame)
+        self.convert_amount.insert(0, "1000")
+        self.convert_amount.grid(row=1, column=2, padx=5, pady=5, sticky="ew")
+        ttk.Button(wallet_frame, text="Пополнить ЦР", command=self._ui_convert_funds).grid(
+            row=1, column=3, padx=5, pady=5, sticky="ew"
+        )
+
+        offline_frame = ttk.LabelFrame(tab, text="Оффлайн кошелек")
+        offline_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        for col in range(5):
+            offline_frame.columnconfigure(col, weight=1, uniform="offlinecol")
+
+        self.offline_user_combo = ttk.Combobox(offline_frame, state="readonly")
+        self.offline_user_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        ttk.Button(
+            offline_frame, text="Активировать 14 дней", command=self._ui_open_offline
+        ).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Label(offline_frame, text="Сумма резерва:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
+        self.offline_amount = ttk.Entry(offline_frame)
+        self.offline_amount.insert(0, "500")
+        self.offline_amount.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+        ttk.Button(offline_frame, text="Пополнить оффлайн", command=self._ui_fund_offline).grid(
+            row=0, column=4, padx=5, pady=5, sticky="ew"
+        )
+
+        ttk.Label(offline_frame, text="Адресат:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.offline_receiver_combo = ttk.Combobox(offline_frame, state="readonly")
+        self.offline_receiver_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Label(offline_frame, text="Сумма:").grid(row=1, column=2, padx=5, pady=5, sticky="e")
+        self.offline_tx_amount = ttk.Entry(offline_frame)
+        self.offline_tx_amount.insert(0, "200")
+        self.offline_tx_amount.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
+        ttk.Button(offline_frame, text="Создать оффлайн-транзакцию", command=self._ui_offline_tx).grid(
+            row=1, column=4, padx=5, pady=5, sticky="ew"
+        )
+
+        online_frame = ttk.LabelFrame(tab, text="Онлайн транзакции")
+        online_frame.grid(row=0, column=2, columnspan=2, sticky="nsew", padx=10, pady=10)
+        for col in range(2):
+            online_frame.columnconfigure(col, weight=1, uniform="onlinecol")
+
+        ttk.Label(online_frame, text="Отправитель:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.sender_combo = ttk.Combobox(online_frame, state="readonly")
+        self.sender_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(online_frame, text="Получатель:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.receiver_combo = ttk.Combobox(online_frame, state="readonly")
+        self.receiver_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(online_frame, text="Тип перевода:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.channel_combo = ttk.Combobox(
+            online_frame,
+            values=["C2C", "C2B", "B2C", "B2B", "G2B", "B2G", "C2G", "G2C"],
+            state="readonly",
+        )
+        self.channel_combo.current(0)
+        self.channel_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(online_frame, text="Сумма:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.online_amount = ttk.Entry(online_frame)
+        self.online_amount.insert(0, "300")
+        self.online_amount.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(online_frame, text="Перевести", command=self._ui_online_tx).grid(
+            row=4, column=0, columnspan=2, padx=5, pady=10, sticky="ew"
+        )
+
+        contract_frame = ttk.LabelFrame(tab, text="Смарт-контракты")
+        contract_frame.grid(row=1, column=2, columnspan=2, sticky="nsew", padx=10, pady=10)
+        for col in range(2):
+            contract_frame.columnconfigure(col, weight=1, uniform="contractcol")
+
+        ttk.Label(contract_frame, text="ФЛ-отправитель:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.contract_sender_combo = ttk.Combobox(contract_frame, state="readonly")
+        self.contract_sender_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(contract_frame, text="ЮЛ/Гос получатель:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.contract_receiver_combo = ttk.Combobox(contract_frame, state="readonly")
+        self.contract_receiver_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(contract_frame, text="Банк:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.contract_bank_combo = ttk.Combobox(contract_frame, state="readonly")
+        self.contract_bank_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(contract_frame, text="Сумма:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.contract_amount = ttk.Entry(contract_frame)
+        self.contract_amount.insert(0, "1000")
+        self.contract_amount.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(contract_frame, text="Описание:").grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        self.contract_description = ttk.Entry(contract_frame, width=40)
+        self.contract_description.insert(0, "Автоплатеж за коммунальные услуги")
+        self.contract_description.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(contract_frame, text="Периодичность:").grid(row=5, column=0, padx=5, pady=5, sticky="e")
+        self.contract_schedule = ttk.Combobox(
+            contract_frame, values=["MONTHLY", "DAILY"], state="readonly"
+        )
+        self.contract_schedule.current(0)
+        self.contract_schedule.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Button(
+            contract_frame, text="Создать смарт-контракт", command=self._ui_create_contract
+        ).grid(row=6, column=0, columnspan=2, pady=10, sticky="ew")
+        ttk.Button(
+            contract_frame, text="Исполнить запланированные", command=self._ui_run_contracts
+        ).grid(row=7, column=0, columnspan=2, pady=5, sticky="ew")
+
+    def _build_bank_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Финансовая организация")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)
+
+        request_frame = ttk.LabelFrame(tab, text="Запрос эмиссии")
+        request_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+
+        ttk.Label(request_frame, text="Банк:").grid(row=0, column=0, padx=5, pady=5)
+        self.bank_combo = ttk.Combobox(request_frame, state="readonly")
+        self.bank_combo.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(request_frame, text="Сумма ЦР:").grid(row=0, column=2, padx=5, pady=5)
+        self.emission_amount = ttk.Entry(request_frame)
+        self.emission_amount.insert(0, "100000")
+        self.emission_amount.grid(row=0, column=3, padx=5, pady=5)
+        ttk.Button(
+            request_frame, text="Отправить запрос", command=self._ui_request_emission
+        ).grid(row=0, column=4, padx=5, pady=5)
+
+        ttk.Label(tab, text="Транзакции, прошедшие через банк").grid(
+            row=1, column=0, sticky="w", padx=10
+        )
+        table_frame = ttk.Frame(tab)
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        self.bank_tx_table = self._make_table(
+            table_frame,
+            ["ID", "Отправитель", "Получатель", "Тип", "Сумма"],
+            stretch=True,
+        )
+        ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
+            row=3, column=0, pady=5
+        )
+
+    def _build_cbr_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Центральный банк")
+        tab.columnconfigure(0, weight=1)
+
+        ttk.Label(tab, text="Запросы на эмиссию").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        self.issuance_table = self._make_table(
+            tab,
+            ["ID", "Банк", "Сумма", "Статус"],
+            row=1,
+            column=0,
+        )
+
+        action_frame = ttk.Frame(tab)
+        action_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+
+        ttk.Button(action_frame, text="Одобрить", command=lambda: self._ui_process_emission(True)).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(action_frame, text="Отклонить", command=lambda: self._ui_process_emission(False)).pack(
+            side=tk.LEFT, padx=5
+        )
+
+        ttk.Label(tab, text="Журнал событий ЦБ и системы").grid(
+            row=3, column=0, sticky="w", padx=10, pady=5
+        )
+        self.cbr_log = tk.Text(tab, height=18)
+        self.cbr_log.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
+        tab.rowconfigure(4, weight=1)
+
+    def _build_user_data_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Данные о пользователях")
+        columns = [
+            "ID",
+            "Тип",
+            "Баланс безнал",
+            "Статус цифрового",
+            "Баланс цифрового",
+            "Статус оффлайн",
+            "Баланс оффлайн",
+            "Активация оффлайн",
+            "Деактивация",
+        ]
+        self.user_table = self._make_table(tab, columns, stretch=True)
+
+    def _build_tx_data_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Данные о транзакциях")
+        columns = [
+            "ID",
+            "Отправитель",
+            "Получатель",
+            "Тип",
+            "Сумма",
+            "Время",
+            "Банк",
+        ]
+        self.tx_table = self._make_table(tab, columns, stretch=True)
+
+    def _build_offline_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Оффлайн-транзакции")
+        tab.rowconfigure(0, weight=1)
+        tab.columnconfigure(0, weight=1)
+        table_frame = ttk.Frame(tab)
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        columns = [
+            "ID",
+            "Отправитель",
+            "Получатель",
+            "Сумма",
+            "Банк",
+            "Время",
+            "Статус",
+        ]
+        self.offline_table = self._make_table(table_frame, columns, stretch=True)
+        ttk.Button(tab, text="Синхронизировать", command=self._ui_sync_offline).grid(
+            row=1, column=0, pady=5
+        )
+
+    def _build_contracts_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Смарт-контракты")
+        tab.rowconfigure(0, weight=1)
+        tab.columnconfigure(0, weight=1)
+        columns = [
+            "ID",
+            "Отправитель",
+            "Получатель",
+            "Банк",
+            "Назначение",
+            "Дата исполнения",
+            "Сумма",
+        ]
+        self.contract_table = self._make_table(tab, columns, stretch=True)
+        ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
+            row=1, column=0, pady=5
+        )
+
+    def _build_consensus_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Консенсус")
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+
+        self.consensus_canvas = tk.Canvas(tab, height=220, bg="white")
+        self.consensus_canvas.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+
+        self.ledger_canvas = tk.Canvas(tab, height=160, bg="white")
+        self.ledger_canvas.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+
+        columns = ["Блок/Транзакция", "Событие", "Узел", "Состояние", "Время"]
+        self.consensus_table = self._make_table(tab, columns, row=2, column=0, columnspan=2, stretch=True)
+
+        btn_frame = ttk.Frame(tab)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=5)
+        ttk.Button(
+            btn_frame,
+            text="Обновить визуализацию",
+            command=self._ui_refresh_consensus,
+        ).pack(side=tk.LEFT, padx=5)
+
+    def _build_ledger_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Распределенный реестр")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+
+        table_frame = ttk.Frame(tab)
+        table_frame.grid(row=0, column=0, sticky="nsew")
+
+        self.block_table = self._make_table(
+            table_frame,
+            ["Номер блока", "Хеш блока", "Хеш родителя", "Узел", "Время создания"],
+            stretch=True,
+        )
+        ttk.Button(tab, text="Экспортировать реестр", command=self._ui_export_registry).grid(
+            row=1, column=0, pady=5
+        )
+
+    def _build_activity_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Информация о этапах")
+        self.activity_text = tk.Text(tab)
+        self.activity_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- UI helpers --------------------------------------------------------
+    def _make_table(
+        self,
+        parent,
+        columns,
+        row: int = 0,
+        column: int = 0,
+        columnspan: int = 1,
+        stretch: bool = False,
+    ):
+        tree = ttk.Treeview(parent, columns=columns, show="headings")
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=150 if not stretch else 120, anchor="center")
+        tree.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=10, pady=10)
+        if stretch:
+            parent.rowconfigure(row, weight=1)
+            parent.columnconfigure(column, weight=1)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=row, column=column + columnspan, sticky="ns")
+        return tree
+
+    def refresh_all(self) -> None:
+        self._refresh_user_lists()
+        self._refresh_tables()
+        self._refresh_consensus_canvas()
+
+    def _refresh_user_lists(self) -> None:
+        users = self.platform.list_users()
+        formatted = [f"{u['id']} | {u['name']} ({u['user_type']})" for u in users]
+        # сохранить текущие выбранные значения, чтобы не сбрасывать выбор пользователя
+        combos = [
+            self.wallet_user_combo,
+            self.offline_user_combo,
+            self.sender_combo,
+            self.receiver_combo,
+            self.contract_sender_combo,
+            self.offline_receiver_combo,
+        ]
+        for combo in combos:
+            if combo:
+                old = combo.get()
+                combo["values"] = formatted
+                if old and old in formatted:
+                    combo.set(old)
+                elif not combo.get() and formatted:
+                    combo.current(0)
+        receivers = [
+            f"{u['id']} | {u['name']} ({u['user_type']})"
+            for u in users
+            if u["user_type"] in {"BUSINESS", "GOVERNMENT"}
+        ]
+        if self.contract_receiver_combo:
+            old = self.contract_receiver_combo.get()
+            self.contract_receiver_combo["values"] = receivers
+            if old and old in receivers:
+                self.contract_receiver_combo.set(old)
+            elif not self.contract_receiver_combo.get() and receivers:
+                self.contract_receiver_combo.current(0)
+        banks = self.platform.list_banks()
+        bank_values = [f"{b['id']} | {b['name']}" for b in banks]
+        for combo in [self.bank_combo, self.contract_bank_combo]:
+            if combo:
+                old = combo.get()
+                combo["values"] = bank_values
+                if old and old in bank_values:
+                    combo.set(old)
+                elif not combo.get() and bank_values:
+                    combo.current(0)
+
+    def _refresh_tables(self) -> None:
+        def clear(tree):
+            if tree:
+                for item in tree.get_children():
+                    tree.delete(item)
+
+        if self.user_table:
+            clear(self.user_table)
+            for u in self.platform.list_users():
+                self.user_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        u["id"],
+                        u["user_type"],
+                        f"{u['fiat_balance']:.2f}",
+                        u["wallet_status"],
+                        f"{u['digital_balance']:.2f}",
+                        u["offline_status"],
+                        f"{u['offline_balance']:.2f}",
+                        u.get("offline_activated_at", "") or "-",
+                        u.get("offline_expires_at", "") or "-",
+                    ),
+                )
+
+        if self.tx_table:
+            clear(self.tx_table)
+            for tx in self.platform.get_transactions():
+                self.tx_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        tx["id"],
+                        tx["sender_id"],
+                        tx["receiver_id"],
+                        f"{tx['tx_type']} / {tx['channel']}",
+                        f"{tx['amount']:.2f}",
+                        tx["timestamp"],
+                        tx["bank_id"],
+                    ),
+                )
+
+        if self.offline_table:
+            clear(self.offline_table)
+            for tx in self.platform.get_offline_transactions():
+                self.offline_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        tx["id"],
+                        tx["sender_id"],
+                        tx["receiver_id"],
+                        f"{tx['amount']:.2f}",
+                        tx["bank_id"],
+                        tx["timestamp"],
+                        tx["offline_status"],
+                    ),
+                )
+
+        if self.contract_table:
+            clear(self.contract_table)
+            for sc in self.platform.get_smart_contracts():
+                self.contract_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        sc["id"],
+                        sc["creator_id"],
+                        sc["beneficiary_id"],
+                        sc["bank_id"],
+                        sc["description"],
+                        sc["next_execution"],
+                        f"{sc['amount']:.2f}",
+                    ),
+                )
+
+        if self.block_table:
+            clear(self.block_table)
+            rows = self.platform.db.execute(
+                "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
+            )
+            for row in rows:
+                self.block_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        row["height"],
+                        row["hash"][:12] + "...",
+                        (row["previous_hash"] or "")[:12] + "...",
+                        row["signer"],
+                        row["timestamp"],
+                    ),
+                )
+
+        if self.bank_tx_table:
+            clear(self.bank_tx_table)
+            for tx in self.platform.get_transactions():
+                self.bank_tx_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        tx["id"],
+                        tx["sender_id"],
+                        tx["receiver_id"],
+                        tx["channel"],
+                        f"{tx['amount']:.2f}",
+                    ),
+                )
+
+        if self.issuance_table:
+            clear(self.issuance_table)
+            rows = self.platform.db.execute(
+                """
+                SELECT i.id, b.name as bank_name, i.amount, i.status
+                FROM issuance_requests i
+                JOIN banks b ON b.id = i.bank_id
+                ORDER BY i.requested_at DESC
+                """,
+                fetchall=True,
+            )
+            for row in rows:
+                self.issuance_table.insert(
+                    "",
+                    tk.END,
+                    values=(row["id"], row["bank_name"], f"{row['amount']:.2f}", row["status"]),
+                )
+
+        if self.consensus_table:
+            clear(self.consensus_table)
+            events = self.platform.consensus.get_recent_events()
+            for event in events:
+                self.consensus_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        event.block_hash[:12],
+                        event.event,
+                        event.actor,
+                        event.state,
+                        event.created_at,
+                    ),
+                )
+
+        if self.activity_text:
+            self.activity_text.delete("1.0", tk.END)
+            for entry in self.platform.get_activity_log():
+                line = f"[{entry['created_at']}] {entry['stage']} | {entry['actor']} -> {entry['details']}\n"
+                self.activity_text.insert(tk.END, line)
+            self.activity_text.see(tk.END)
+
+        if self.cbr_log:
+            self.cbr_log.delete("1.0", tk.END)
+            for entry in self.platform.get_activity_log(limit=200):
+                self.cbr_log.insert(
+                    tk.END,
+                    f"{entry['created_at']} | {entry['context']} | {entry['stage']} | {entry['details']}\n",
+                )
+
+    def _refresh_consensus_canvas(self) -> None:
+        canvas = self.consensus_canvas
+        if not canvas:
+            return
+        canvas.delete("all")
+        nodes = self.platform.consensus.get_nodes()
+        width = int(canvas.winfo_width() or 1200)
+        spacing = width // (len(nodes) + 1)
+        y = 110
+        # если запущена анимация – берём активный узел из неё,
+        # иначе подсвечиваем узел последнего события
+        active_actor = self._consensus_active_actor
+        if active_actor is None:
+            recent_events = self.platform.consensus.get_recent_events(limit=1)
+            active_actor = recent_events[0].actor if recent_events else None
+
+        for idx, node in enumerate(nodes, start=1):
+            x = spacing * idx
+            fill_color = "#10b981" if node == active_actor else "#2563eb"
+            outline = "#0f172a"
+            canvas.create_oval(x - 40, y - 40, x + 40, y + 40, fill=fill_color, outline=outline, width=2)
+            canvas.create_text(x, y, text=node, fill="black", width=120)
+            if idx < len(nodes):
+                canvas.create_line(
+                    x + 40,
+                    y,
+                    x + spacing - 40,
+                    y,
+                    arrow=tk.LAST,
+                    fill="#059669",
+                    width=3,
+                )
+        stats = self.platform.consensus.stats()
+        subtitle = self._consensus_active_event or ""
+        canvas.create_text(
+            width // 2,
+            15,
+            text=f"Раунды консенсуса: {stats['rounds']} | Последний блок: {stats['last_block']}",
+            fill="black",
+        )
+        if subtitle:
+            canvas.create_text(
+                width // 2,
+                30,
+                text=subtitle,
+                fill="#4b5563",
+            )
+
+        # Отрисовка визуализации распределённого реестра на второй канве
+        ledger_canvas = self.ledger_canvas
+        if ledger_canvas:
+            ledger_canvas.delete("all")
+            lwidth = int(ledger_canvas.winfo_width() or 1200)
+            rows = self.platform.db.execute(
+                "SELECT height, hash, previous_hash FROM blocks ORDER BY height DESC LIMIT 8",
+                fetchall=True,
+            )
+            if not rows:
+                ledger_canvas.create_text(
+                    lwidth // 2,
+                    40,
+                    text="Блоки реестра ещё не созданы",
+                    fill="black",
+                )
+            else:
+                rows = list(reversed(rows))
+                self._ledger_last_rows = rows
+                count = len(rows)
+                spacing_l = max(lwidth // (count + 1), 120)
+                y_l = 80
+                prev_x = None
+                prev_y = None
+                for idx, row in enumerate(rows, start=1):
+                    x = spacing_l * idx
+                    x0, y0, x1, y1 = x - 60, y_l - 30, x + 60, y_l + 30
+                    is_active = row["height"] == self._ledger_active_height
+                    fill_color = "#fde68a" if is_active else "#eff6ff"
+                    outline_color = "#92400e" if is_active else "#1d4ed8"
+                    ledger_canvas.create_rectangle(
+                        x0, y0, x1, y1, fill=fill_color, outline=outline_color, width=2
+                    )
+                    ledger_canvas.create_text(
+                        x,
+                        y_l - 10,
+                        text=f"Блок {row['height']}",
+                        fill="black",
+                    )
+                    ledger_canvas.create_text(
+                        x,
+                        y_l + 10,
+                        text=row["hash"][:10] + "...",
+                        fill="#4b5563",
+                    )
+                    if prev_x is not None:
+                        ledger_canvas.create_line(
+                            prev_x + 60, prev_y, x - 60, y_l, arrow=tk.LAST, fill="#6b7280"
+                        )
+                    prev_x, prev_y = x, y_l
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Button callbacks --------------------------------------------------
+    def _ui_refresh_consensus(self) -> None:
+        """Обновить таблицу и перезапустить анимацию консенсуса/реестра."""
+        self.refresh_all()
+        self._start_consensus_animation()
+
+    def _start_consensus_animation(self) -> None:
+        """Запуск анимации по последнему раунду консенсуса."""
+        if self._consensus_anim_job is not None:
+            self.after_cancel(self._consensus_anim_job)
+            self._consensus_anim_job = None
+        stats = self.platform.consensus.stats()
+        last_block = stats.get("last_block")
+        if not last_block or last_block == "-":
+            # нет блоков – просто перерисуем статичную схему
+            self._consensus_anim_events = []
+            self._consensus_anim_index = 0
+            self._consensus_active_actor = None
+            self._consensus_active_state = None
+            self._consensus_active_event = None
+            self._ledger_active_height = None
+            self._refresh_consensus_canvas()
+            return
+        rows = self.platform.db.execute(
+            """
+            SELECT block_hash, event, actor, state, created_at
+            FROM consensus_events
+            WHERE block_hash = ?
+            ORDER BY id ASC
+            """,
+            (last_block,),
+            fetchall=True,
+        )
+        self._consensus_anim_events = [dict(r) for r in rows] if rows else []
+        self._consensus_anim_index = 0
+        self._run_consensus_animation_step()
+
+    def _run_consensus_animation_step(self) -> None:
+        if not self._consensus_anim_events or not self.consensus_canvas:
+            self._consensus_anim_job = None
+            return
+        event = self._consensus_anim_events[self._consensus_anim_index]
+        self._consensus_active_actor = event["actor"]
+        self._consensus_active_state = event["state"]
+        self._consensus_active_event = event["event"]
+        # для анимации реестра подсвечиваем блоки по кругу
+        if self._ledger_last_rows:
+            idx = self._consensus_anim_index % len(self._ledger_last_rows)
+            self._ledger_active_height = self._ledger_last_rows[idx]["height"]
+        else:
+            self._ledger_active_height = None
+        self._refresh_consensus_canvas()
+        self._consensus_anim_index = (self._consensus_anim_index + 1) % len(
+            self._consensus_anim_events
+        )
+        self._consensus_anim_job = self.after(800, self._run_consensus_animation_step)
+
+    def _selected_id(self, value: str) -> int:
+        if not value:
+            raise ValueError("Выберите участника из списка")
+        return int(value.split("|")[0].strip())
+
+    def _ui_open_wallet(self) -> None:
+        try:
+            user_id = self._selected_id(self.wallet_user_combo.get())
+            user = self.platform.get_user(user_id)
+            already_open = user["wallet_status"] == "OPEN"
+            self.platform.open_digital_wallet(user_id)
+            self.refresh_all()
+            if already_open:
+                messagebox.showinfo("Цифровой кошелек", f"У пользователя {user['name']} кошелек уже открыт")
+            else:
+                messagebox.showinfo("Цифровой кошелек", f"Цифровой кошелек для {user['name']} успешно открыт")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_convert_funds(self) -> None:
+        try:
+            user_id = self._selected_id(self.wallet_user_combo.get())
+            amount = float(self.convert_amount.get())
+            self.platform.exchange_to_digital(user_id, amount)
+            self.refresh_all()
+            user = self.platform.get_user(user_id)
+            messagebox.showinfo(
+                "Конвертация средств",
+                f"Цифровой кошелек пользователя {user['name']} пополнен на {amount:.2f} ЦР",
+            )
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_open_offline(self) -> None:
+        try:
+            user_id = self._selected_id(self.offline_user_combo.get())
+            user = self.platform.get_user(user_id)
+            already_open = user["offline_status"] == "OPEN"
+            self.platform.open_offline_wallet(user_id)
+            self.refresh_all()
+            if already_open:
+                messagebox.showinfo("Оффлайн-кошелек", f"Оффлайн-кошелек пользователя {user['name']} уже активен")
+            else:
+                messagebox.showinfo("Оффлайн-кошелек", f"Оффлайн-кошелек для {user['name']} активирован на 14 дней")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_fund_offline(self) -> None:
+        try:
+            user_id = self._selected_id(self.offline_user_combo.get())
+            amount = float(self.offline_amount.get())
+            self.platform.fund_offline_wallet(user_id, amount)
+            self.refresh_all()
+            user = self.platform.get_user(user_id)
+            messagebox.showinfo(
+                "Оффлайн-кошелек",
+                f"Оффлайн-кошелек пользователя {user['name']} пополнен на {amount:.2f} ЦР",
+            )
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_offline_tx(self) -> None:
+        try:
+            sender_id = self._selected_id(self.offline_user_combo.get())
+            receiver_id = self._selected_id(self.offline_receiver_combo.get())
+            amount = float(self.offline_tx_amount.get())
+            self.platform.create_offline_transaction(sender_id, receiver_id, amount)
+            self.refresh_all()
+            messagebox.showinfo("Оффлайн-транзакция", "Оффлайн-транзакция создана и сохранена локально")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_online_tx(self) -> None:
+        try:
+            sender_id = self._selected_id(self.sender_combo.get())
+            receiver_id = self._selected_id(self.receiver_combo.get())
+            amount = float(self.online_amount.get())
+            channel = self.channel_combo.get()
+            self.platform.create_online_transaction(sender_id, receiver_id, amount, channel)
+            self.refresh_all()
+            messagebox.showinfo("Онлайн транзакция", "Онлайн транзакция успешно выполнена и записана в реестр")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_create_contract(self) -> None:
+        try:
+            sender_id = self._selected_id(self.contract_sender_combo.get())
+            receiver_id = self._selected_id(self.contract_receiver_combo.get())
+            bank_id = self._selected_id(self.contract_bank_combo.get())
+            amount = float(self.contract_amount.get())
+            description = self.contract_description.get()
+            schedule = self.contract_schedule.get()
+            self.platform.create_smart_contract(
+                sender_id, receiver_id, bank_id, amount, description, schedule
+            )
+            self.refresh_all()
+            messagebox.showinfo("Смарт-контракт", "Контракт создан")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_run_contracts(self) -> None:
+        executed = self.platform.execute_due_contracts()
+        self.refresh_all()
+        messagebox.showinfo("Смарт-контракты", f"Исполнено контрактов: {len(executed)}")
+
+    def _ui_request_emission(self) -> None:
+        try:
+            bank_id = self._selected_id(self.bank_combo.get())
+            amount = float(self.emission_amount.get())
+            req_id = self.platform.request_emission(bank_id, amount)
+            self.refresh_all()
+            messagebox.showinfo("Эмиссия", f"Запрос отправлен: {req_id}")
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_process_emission(self, approve: bool) -> None:
+        selection = self.issuance_table.selection()
+        if not selection:
+            messagebox.showwarning("Эмиссия", "Выберите запрос")
+            return
+        item = self.issuance_table.item(selection[0])
+        req_id = item["values"][0]
+        reason = "" if approve else "Не выполнены условия резерва"
+        try:
+            self.platform.process_emission(req_id, approve, reason)
+            self.refresh_all()
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _ui_sync_offline(self) -> None:
+        stats = self.platform.sync_offline_transactions()
+        self.refresh_all()
+        messagebox.showinfo(
+            "Оффлайн синхронизация",
+            f"Обработано: {stats['processed']}, Конфликты: {stats['conflicts']}",
+        )
+
+    def _ui_export_registry(self) -> None:
+        folder = filedialog.askdirectory(title="Выберите папку для экспорта")
+        if not folder:
+            return
+        paths = self.platform.export_registry(folder)
+        messagebox.showinfo("Экспорт", f"Файлы сохранены:\n{paths['ledger']}\n{paths['metrics']}")
+
+    # endregion -------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    app = DigitalRubleApp()
+    app.mainloop()
+
