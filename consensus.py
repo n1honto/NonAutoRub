@@ -75,20 +75,38 @@ class MasterchainConsensus:
             )
         )
 
+        # PREPARE: ЦБ обращается к каждому банку, затем каждый банк отправляет prepare-сообщение
+        for bank in bank_nodes:
+            # ЦБ обращается к каждому узлу
+            cbr_contact = f"Этап PREPARE: ЦБ обращается к узлу {bank}"
+            self.record_event(block_hash, cbr_contact, leader, "PREPARE")
+            timeline.append(
+                ConsensusEvent(
+                    block_hash=block_hash,
+                    event=cbr_contact,
+                    actor=leader,
+                    state="PREPARE",
+                    created_at=stamp,
+                )
+            )
+        
         # PREPARE: каждый банк отправляет prepare-сообщение
         prepare_count = 0
-        for bank in bank_nodes:
+        lag_node_idx = 0 if len(bank_nodes) > 0 else -1  # первый узел отстает
+        fault_node_idx = 1 if len(bank_nodes) > 1 else -1  # второй узел недоступен
+        
+        for idx, bank in enumerate(bank_nodes):
             ev = f"PREPARE: сообщение от {bank}"
             state = "PREPARE_MSG"
             # часть узлов могут отставать или вести себя ошибочно
-            if prepare_count == 0:
+            if idx == lag_node_idx:
                 state = "LAG"
                 ev += " (узел отстаёт)"
-            elif prepare_count == 1:
+            elif idx == fault_node_idx:
                 state = "FAULT"
                 ev += " (узел временно недоступен)"
             else:
-                prepare_count += 1
+                prepare_count += 1  # считаем только корректные узлы
             self.record_event(block_hash, ev, bank, state)
             timeline.append(
                 ConsensusEvent(
@@ -100,7 +118,7 @@ class MasterchainConsensus:
                 )
             )
         # кворум PREPARE – учитываем только корректные prepare
-        quorum_prepare = max(prepare_count, 0)
+        quorum_prepare = prepare_count
         quorum_event = f"PREPARE: кворум {quorum_prepare}/{max(len(bank_nodes),1)}"
         self.record_event(block_hash, quorum_event, leader, "PREPARE")
         timeline.append(
@@ -113,6 +131,21 @@ class MasterchainConsensus:
             )
         )
 
+        # COMMIT: ЦБ обращается к каждому банку, затем каждый банк подтверждает блок
+        for bank in bank_nodes:
+            # ЦБ обращается к каждому узлу
+            cbr_contact = f"Этап COMMIT: ЦБ обращается к узлу {bank}"
+            self.record_event(block_hash, cbr_contact, leader, "COMMIT")
+            timeline.append(
+                ConsensusEvent(
+                    block_hash=block_hash,
+                    event=cbr_contact,
+                    actor=leader,
+                    state="COMMIT",
+                    created_at=stamp,
+                )
+            )
+        
         # COMMIT: каждый банк подтверждает блок
         commit_count = 0
         for bank in bank_nodes:

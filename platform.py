@@ -119,29 +119,46 @@ class DigitalRublePlatform:
         оффлайн‑операции, запросы на эмиссию, события консенсуса и т.д.
         В реестре сохраняется только генезис‑блок (height = 0).
         """
-        # Сначала дочерние таблицы, затем сущности верхнего уровня
-        self.db.execute("DELETE FROM offline_transactions")
-        self.db.execute("DELETE FROM block_transactions")
-        self.db.execute("DELETE FROM consensus_events")
-        self.db.execute("DELETE FROM activity_log")
-        self.db.execute("DELETE FROM smart_contracts")
-        self.db.execute("DELETE FROM issuance_requests")
-        self.db.execute("DELETE FROM government_institutions")
-        self.db.execute("DELETE FROM transactions")
-        self.db.execute("DELETE FROM users")
-        self.db.execute("DELETE FROM banks")
-        self.db.execute("DELETE FROM metrics")
-        # В блокчейне оставляем только генезис‑блок (если он есть)
-        self.db.execute("DELETE FROM blocks WHERE height > 0")
-        # Сбросить автоинкрементные счётчики, чтобы ID начинались снова с 1
+        # Отключаем проверку внешних ключей временно для безопасного удаления
+        self.db.execute("PRAGMA foreign_keys = OFF")
         try:
-            self.db.execute(
-                "DELETE FROM sqlite_sequence WHERE name IN "
-                "('users','banks','government_institutions','activity_log','blocks')"
-            )
-        except Exception:
-            # sqlite_sequence может отсутствовать – это не критично для работы модели
-            pass
+            # Удаляем в правильном порядке: сначала зависимые таблицы, потом основные
+            # 1. Таблицы, зависящие от transactions и blocks
+            self.db.execute("DELETE FROM offline_transactions")
+            self.db.execute("DELETE FROM block_transactions")
+            self.db.execute("DELETE FROM utxos")
+            
+            # 2. Таблицы без внешних ключей
+            self.db.execute("DELETE FROM consensus_events")
+            self.db.execute("DELETE FROM activity_log")
+            self.db.execute("DELETE FROM metrics")
+            
+            # 3. Таблицы, зависящие от users и banks
+            self.db.execute("DELETE FROM smart_contracts")
+            self.db.execute("DELETE FROM issuance_requests")
+            self.db.execute("DELETE FROM government_institutions")
+            
+            # 4. Основные таблицы
+            self.db.execute("DELETE FROM transactions")
+            self.db.execute("DELETE FROM users")
+            self.db.execute("DELETE FROM banks")
+            
+            # 5. Блоки (после удаления block_transactions)
+            self.db.execute("DELETE FROM blocks WHERE height > 0")
+            
+            # Сбросить автоинкрементные счётчики, чтобы ID начинались снова с 1
+            try:
+                self.db.execute(
+                    "DELETE FROM sqlite_sequence WHERE name IN "
+                    "('users','banks','government_institutions','activity_log','blocks')"
+                )
+            except Exception:
+                # sqlite_sequence может отсутствовать – это не критично для работы модели
+                pass
+        finally:
+            # Включаем обратно проверку внешних ключей
+            self.db.execute("PRAGMA foreign_keys = ON")
+        
         # Удалить локальные БД банков
         from pathlib import Path
 
@@ -404,6 +421,17 @@ class DigitalRublePlatform:
             (amount, amount, user_id),
         )
         self.metrics.increment("offline_reserved", amount)
+        # Создать транзакцию для пополнения оффлайн кошелька
+        context = TransactionContext(
+            sender_id=user_id,
+            receiver_id=user_id,
+            amount=amount,
+            tx_type="EXCHANGE",
+            channel="OFFLINE_FUND",
+            bank_id=user["bank_id"],
+            notes="Пополнение оффлайн кошелька из цифрового кошелька",
+        )
+        self._create_transaction_record(context, status="CONFIRMED")
         self._log_activity(
             actor=user["name"],
             stage="Резерв для оффлайн",
@@ -839,7 +867,7 @@ class DigitalRublePlatform:
             raise ValueError("Получатель должен быть ЮЛ или госорган")
         contract_id = generate_id("sc")
         # Одноразовый смарт-контракт, исполняется только по явному запросу
-        next_exec = datetime.utcnow()
+        # next_execution устанавливаем в NULL, чтобы контракт не исполнялся автоматически
         self.db.execute(
             """
             INSERT INTO smart_contracts(id, creator_id, beneficiary_id, bank_id, amount,
@@ -855,7 +883,7 @@ class DigitalRublePlatform:
                 amount,
                 description,
                 "ONCE",
-                next_exec.isoformat(),
+                None,  # NULL - контракт не будет исполняться автоматически
                 amount,
             ),
         )
@@ -871,6 +899,8 @@ class DigitalRublePlatform:
         return contract_id
 
     def execute_due_contracts(self) -> List[str]:
+        # Исполняем только контракты со статусом SCHEDULED
+        # Контракты с next_execution = NULL исполняются только вручную
         rows = self.db.execute(
             """
             SELECT * FROM smart_contracts
@@ -881,6 +911,7 @@ class DigitalRublePlatform:
         executed: List[str] = []
         for contract in rows:
             try:
+                # Исполняем контракт независимо от next_execution (ручное исполнение)
                 self._execute_contract(contract)
                 executed.append(contract["id"])
             except ValueError as exc:
@@ -1136,16 +1167,110 @@ class DigitalRublePlatform:
     # region --- Data export -------------------------------------------------------
     def export_registry(self, folder: str = "exports") -> Dict[str, str]:
         from pathlib import Path
+        from datetime import datetime
 
         path = Path(folder)
         path.mkdir(exist_ok=True)
-        ledger_path = path / "ledger.json"
-        metrics_path = path / "metrics.json"
-        ledger_path.write_text(self.db.table_to_json("blocks"), encoding="utf-8")
-        metrics_path.write_text(
-            self.db.table_to_json("metrics"), encoding="utf-8"
+        log_path = path / f"ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        
+        # Получаем все блоки
+        blocks = self.db.execute(
+            "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
         )
-        return {"ledger": str(ledger_path), "metrics": str(metrics_path)}
+        
+        # Получаем все транзакции
+        transactions = self.db.execute(
+            "SELECT * FROM transactions ORDER BY timestamp ASC", fetchall=True
+        )
+        
+        # Создаём словарь транзакций для быстрого доступа
+        tx_dict = {tx["id"]: tx for tx in transactions}
+        
+        # Формируем лог-файл
+        log_lines = []
+        log_lines.append("=" * 80)
+        log_lines.append("ЭКСПОРТ РАСПРЕДЕЛЕННОГО РЕЕСТРА ЦИФРОВОГО РУБЛЯ")
+        log_lines.append(f"Дата экспорта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_lines.append("=" * 80)
+        log_lines.append("")
+        
+        # Записываем блоки
+        log_lines.append("БЛОКИ РЕЕСТРА")
+        log_lines.append("-" * 80)
+        for block in blocks:
+            log_lines.append(f"Блок #{block['height']}")
+            log_lines.append(f"  Хеш: {block['hash']}")
+            log_lines.append(f"  Предыдущий хеш: {block['previous_hash']}")
+            log_lines.append(f"  Меркле-корень: {block['merkle_root']}")
+            log_lines.append(f"  Время создания: {block['timestamp']}")
+            log_lines.append(f"  Подписант: {block['signer']}")
+            log_lines.append(f"  Nonce: {block['nonce']}")
+            log_lines.append(f"  Количество транзакций: {block['tx_count']}")
+            log_lines.append(f"  Время формирования: {block['duration_ms']:.2f} мс")
+            
+            # Получаем транзакции этого блока
+            block_txs = self.db.execute(
+                """
+                SELECT t.* FROM transactions t
+                JOIN block_transactions bt ON bt.tx_id = t.id
+                JOIN blocks b ON b.id = bt.block_id
+                WHERE b.height = ?
+                ORDER BY t.timestamp ASC
+                """,
+                (block['height'],),
+                fetchall=True,
+            )
+            
+            if block_txs:
+                log_lines.append("  Транзакции в блоке:")
+                for tx in block_txs:
+                    sender = self.get_user(tx['sender_id'])
+                    receiver = self.get_user(tx['receiver_id'])
+                    bank = self._get_bank(tx['bank_id'])
+                    log_lines.append(f"    - TX {tx['id']}")
+                    log_lines.append(f"      Отправитель: {sender['name']} (ID: {tx['sender_id']})")
+                    log_lines.append(f"      Получатель: {receiver['name']} (ID: {tx['receiver_id']})")
+                    log_lines.append(f"      Сумма: {tx['amount']:.2f} ЦР")
+                    log_lines.append(f"      Тип: {tx['tx_type']} / {tx['channel']}")
+                    log_lines.append(f"      Банк: {bank['name']}")
+                    log_lines.append(f"      Время: {tx['timestamp']}")
+                    log_lines.append(f"      Хеш транзакции: {tx['hash']}")
+                    # Преобразуем Row в dict для безопасного доступа
+                    tx_dict = dict(tx)
+                    if tx_dict.get('user_sig'):
+                        log_lines.append(f"      Подпись пользователя: {tx_dict['user_sig'][:16]}...")
+                    if tx_dict.get('bank_sig'):
+                        log_lines.append(f"      Подпись банка: {tx_dict['bank_sig'][:16]}...")
+                    if tx_dict.get('cbr_sig'):
+                        log_lines.append(f"      Подпись ЦБ: {tx_dict['cbr_sig'][:16]}...")
+            
+            log_lines.append("")
+        
+        log_lines.append("=" * 80)
+        log_lines.append("СТАТИСТИКА")
+        log_lines.append("-" * 80)
+        log_lines.append(f"Всего блоков: {len(blocks)}")
+        log_lines.append(f"Всего транзакций: {len(transactions)}")
+        
+        # Статистика по типам транзакций
+        tx_types = {}
+        for tx in transactions:
+            tx_type = tx['tx_type']
+            tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
+        
+        log_lines.append("Транзакции по типам:")
+        for tx_type, count in tx_types.items():
+            log_lines.append(f"  {tx_type}: {count}")
+        
+        log_lines.append("")
+        log_lines.append("=" * 80)
+        log_lines.append(f"Конец экспорта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_lines.append("=" * 80)
+        
+        # Записываем в файл
+        log_path.write_text("\n".join(log_lines), encoding="utf-8")
+        
+        return {"ledger": str(log_path)}
 
     # endregion -------------------------------------------------------------------
 
