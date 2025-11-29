@@ -108,6 +108,9 @@ class DatabaseManager:
                 hash TEXT NOT NULL,
                 offline_flag INTEGER DEFAULT 0,
                 notes TEXT,
+                user_sig TEXT,
+                bank_sig TEXT,
+                cbr_sig TEXT,
                 FOREIGN KEY (sender_id) REFERENCES users(id),
                 FOREIGN KEY (receiver_id) REFERENCES users(id),
                 FOREIGN KEY (bank_id) REFERENCES banks(id)
@@ -203,6 +206,21 @@ class DatabaseManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS utxos (
+                id TEXT PRIMARY KEY,
+                owner_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                created_tx_id TEXT NOT NULL,
+                spent_tx_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                spent_at TEXT,
+                FOREIGN KEY (owner_id) REFERENCES users(id),
+                FOREIGN KEY (created_tx_id) REFERENCES transactions(id),
+                FOREIGN KEY (spent_tx_id) REFERENCES transactions(id)
+            );
+            """,
         ]
         with self._cursor() as cur:
             for stmt in schema_statements:
@@ -222,6 +240,14 @@ class DatabaseManager:
                 "nonce": "INTEGER",
                 "duration_ms": "REAL",
                 "tx_count": "INTEGER",
+            },
+        )
+        self._ensure_columns(
+            "transactions",
+            {
+                "user_sig": "TEXT",
+                "bank_sig": "TEXT",
+                "cbr_sig": "TEXT",
             },
         )
         self._ensure_block_heights()

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from consensus import MasterchainConsensus  # type: ignore
 from database import DatabaseManager  # type: ignore
 from ledger import DistributedLedger  # type: ignore
+import hashlib
 
 logging.basicConfig(
     filename="digital_ruble.log",
@@ -20,6 +21,26 @@ logging.basicConfig(
 
 def generate_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+CRYPTO_SECRET = "druble-sim-secret"
+
+
+def _hash_str(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _private_key(owner_type: str, owner_id: int) -> str:
+    return _hash_str(f"{CRYPTO_SECRET}:{owner_type}:{owner_id}")
+
+
+def _sign(owner_type: str, owner_id: int, payload: str) -> str:
+    pk = _private_key(owner_type, owner_id)
+    return _hash_str(payload + pk)
+
+
+def _verify(owner_type: str, owner_id: int, payload: str, signature: str) -> bool:
+    return signature == _sign(owner_type, owner_id, payload)
 
 
 @dataclass
@@ -83,6 +104,7 @@ class DigitalRublePlatform:
         # Пользователи, банки и транзакции не создаются автоматически –
         # всё управление выполняется пользователем из вкладки "Управление".
         self._ensure_seed_state()
+        self._lagging_bank_id: Optional[int] = None
 
     # region --- Bootstrap helpers -------------------------------------------------
     def _ensure_seed_state(self) -> None:
@@ -319,6 +341,18 @@ class DigitalRublePlatform:
             (amount, amount, user_id),
         )
         self.metrics.increment("fiat_to_digital", amount)
+        # Зафиксировать конвертацию как отдельную операцию в журнале транзакций + создать UTXO
+        context = TransactionContext(
+            sender_id=user_id,
+            receiver_id=user_id,
+            amount=amount,
+            tx_type="EXCHANGE",
+            channel="FIAT2DR",
+            bank_id=user["bank_id"],
+            notes="Конвертация безналичных средств в цифровые рубли",
+        )
+        tx = self._create_transaction_record(context, status="CONFIRMED")
+        self._create_utxo(user_id, amount, tx["id"])
         self._log_activity(
             actor=user["name"],
             stage="Конвертация средств",
@@ -515,6 +549,14 @@ class DigitalRublePlatform:
                 (row["offline_id"],),
             )
             block = self.ledger.append_block([dict(row)], signer="ЦБ РФ")
+            # цифровая подпись ЦБ и обновление UTXO для оффлайн-платежа
+            cbr_sig = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+                (cbr_sig, row["id"]),
+            )
+            self._spend_utxos(row["sender_id"], row["amount"], row["id"])
+            self._create_utxo(row["receiver_id"], row["amount"], row["id"])
             self.consensus.run_round(block.hash)
             self._log_activity(
                 actor="ЦБ РФ",
@@ -533,7 +575,16 @@ class DigitalRublePlatform:
 
     def _finalize_transaction(self, context: TransactionContext) -> Dict:
         tx = self._create_transaction_record(context, status="CONFIRMED")
+        # обновление UTXO: списать у отправителя, создать для получателя
+        self._spend_utxos(context.sender_id, context.amount, tx["id"])
+        self._create_utxo(context.receiver_id, context.amount, tx["id"])
         block = self.ledger.append_block([tx], signer="ЦБ РФ")
+        # цифровая подпись ЦБ для транзакции
+        cbr_sig = _sign("CBR", 0, block.hash)
+        self.db.execute(
+            "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+            (cbr_sig, tx["id"]),
+        )
         self.consensus.run_round(block.hash)
         self._log_block_flow(block, context)
         return tx
@@ -550,12 +601,16 @@ class DigitalRublePlatform:
             context.amount,
             timestamp,
         )
+        payload = f"{tx_id}:{context.sender_id}:{context.receiver_id}:{context.amount}:{timestamp}"
+        user_sig = _sign("USER", context.sender_id, payload)
+        bank_sig = _sign("BANK", context.bank_id, payload)
         self.db.execute(
             """
             INSERT INTO transactions(id, sender_id, receiver_id, amount,
                                      tx_type, channel, status, timestamp,
-                                     bank_id, hash, offline_flag, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     bank_id, hash, offline_flag, notes,
+                                     user_sig, bank_sig, cbr_sig)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (
                 tx_id,
@@ -570,6 +625,8 @@ class DigitalRublePlatform:
                 tx_hash,
                 context.offline_flag,
                 context.notes,
+                user_sig,
+                bank_sig,
             ),
         )
         self.consensus.log_transaction(tx_hash)
@@ -608,6 +665,105 @@ class DigitalRublePlatform:
             )
         else:
             raise ValueError("Неизвестный режим перевода")
+
+    # UTXO helpers ---------------------------------------------------------------
+    def _create_utxo(self, owner_id: int, amount: float, created_tx_id: str) -> None:
+        utxo_id = generate_id("ux")
+        self.db.execute(
+            """
+            INSERT INTO utxos(id, owner_id, amount, status, created_tx_id)
+            VALUES (?, ?, ?, 'UNSPENT', ?)
+            """,
+            (utxo_id, owner_id, amount, created_tx_id),
+        )
+
+    def _spend_utxos(self, owner_id: int, amount: float, spending_tx_id: str) -> None:
+        if amount <= 0:
+            return
+        remaining = amount
+        rows = self.db.execute(
+            """
+            SELECT id, amount FROM utxos
+            WHERE owner_id = ? AND status = 'UNSPENT'
+            ORDER BY created_at ASC
+            """,
+            (owner_id,),
+            fetchall=True,
+        )
+        for row in rows or []:
+            if remaining <= 0:
+                break
+            utxo_amount = row["amount"]
+            utxo_id = row["id"]
+            self.db.execute(
+                """
+                UPDATE utxos
+                SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (spending_tx_id, utxo_id),
+            )
+            if utxo_amount > remaining:
+                # вернуть сдачу как новый UTXO
+                change = utxo_amount - remaining
+                self._create_utxo(owner_id, change, spending_tx_id)
+            remaining -= utxo_amount
+        if remaining > 0:
+            # в учебной модели просто фиксируем, что часть суммы покрыта "сверх" (например, эмиссией)
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="UTXO",
+                details=f"Для владельца {owner_id} не хватило UTXO на сумму {remaining:.2f}",
+                context="Блокчейн",
+            )
+
+    # Репликация блоков в локальные БД банков -----------------------------------
+    def _replicate_block_to_banks(self, block, txs: List[Dict]) -> None:
+        banks = self.list_banks()
+        if not banks:
+            return
+        from database import DatabaseManager  # локальный импорт
+
+        # выберем первый банк как "отстающий" для имитации рассинхронизации
+        if self._lagging_bank_id is None:
+            self._lagging_bank_id = banks[0]["id"]
+        for bank in banks:
+            bank_id = bank["id"]
+            # отстающий банк пропускает каждый второй блок
+            if bank_id == self._lagging_bank_id and block.height % 2 == 1:
+                self._log_activity(
+                    actor=bank["name"],
+                    stage="Репликация блока",
+                    details=f"Блок {block.height} временно не применён (отставание узла)",
+                    context="Блокчейн",
+                )
+                continue
+            local_db = DatabaseManager(f"bank_{bank_id}.db")
+            # заголовок блока – если уже есть, пропускаем
+            exists = local_db.execute(
+                "SELECT id FROM blocks WHERE height = ?",
+                (block.height,),
+                fetchone=True,
+            )
+            if not exists:
+                local_db.execute(
+                    """
+                    INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
+                                       signer, nonce, duration_ms, tx_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        block.height,
+                        block.hash,
+                        block.previous_hash,
+                        block.merkle_root,
+                        block.timestamp,
+                        block.signer,
+                        block.nonce,
+                        block.duration_ms,
+                        len(txs),
+                    ),
+                )
 
     # endregion -------------------------------------------------------------------
 
@@ -672,7 +828,6 @@ class DigitalRublePlatform:
         bank_id: int,
         amount: float,
         description: str,
-        schedule: str,
     ) -> str:
         creator = self.get_user(creator_id)
         beneficiary = self.get_user(beneficiary_id)
@@ -683,7 +838,8 @@ class DigitalRublePlatform:
         if beneficiary["user_type"] not in {"BUSINESS", "GOVERNMENT"}:
             raise ValueError("Получатель должен быть ЮЛ или госорган")
         contract_id = generate_id("sc")
-        next_exec = datetime.utcnow() + timedelta(days=30 if schedule == "MONTHLY" else 1)
+        # Одноразовый смарт-контракт, исполняется только по явному запросу
+        next_exec = datetime.utcnow()
         self.db.execute(
             """
             INSERT INTO smart_contracts(id, creator_id, beneficiary_id, bank_id, amount,
@@ -698,7 +854,7 @@ class DigitalRublePlatform:
                 bank_id,
                 amount,
                 description,
-                schedule,
+                "ONCE",
                 next_exec.isoformat(),
                 amount,
             ),
@@ -718,9 +874,8 @@ class DigitalRublePlatform:
         rows = self.db.execute(
             """
             SELECT * FROM smart_contracts
-            WHERE status = 'SCHEDULED' AND next_execution <= ?
+            WHERE status = 'SCHEDULED'
             """,
-            (datetime.utcnow().isoformat(),),
             fetchall=True,
         )
         executed: List[str] = []
@@ -759,16 +914,14 @@ class DigitalRublePlatform:
             contract["amount"],
             mode="digital",
         )
-        next_exec = datetime.utcnow() + timedelta(days=30 if contract["schedule"] == "MONTHLY" else 1)
         self.db.execute(
             """
             UPDATE smart_contracts
-            SET status = 'SCHEDULED',
-                last_execution = CURRENT_TIMESTAMP,
-                next_execution = ?
+            SET status = 'EXECUTED',
+                last_execution = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (next_exec.isoformat(), contract["id"]),
+            (contract["id"],),
         )
         self._log_activity(
             actor="ЦБ РФ",

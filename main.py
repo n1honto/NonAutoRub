@@ -35,6 +35,7 @@ class DigitalRubleApp(tk.Tk):
         self.consensus_canvas = None
         self.ledger_canvas = None
         self.block_table = None
+        self.utxo_table = None
         self.activity_text = None
         self.bank_tx_table = None
         self.issuance_table = None
@@ -42,6 +43,7 @@ class DigitalRubleApp(tk.Tk):
         self.wallet_user_combo = None
         self.offline_user_combo = None
         self.offline_receiver_combo = None
+        self.offline_sender_combo = None
         self.sender_combo = None
         self.receiver_combo = None
         self.channel_combo = None
@@ -58,6 +60,14 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_active_event = None
         self._ledger_last_rows = []
         self._ledger_active_height = None
+
+    def _user_type_label(self, code: str) -> str:
+        mapping = {
+            "INDIVIDUAL": "Физическое лицо",
+            "BUSINESS": "Юридическое лицо",
+            "GOVERNMENT": "Государственное учреждение",
+        }
+        return mapping.get(code, code)
 
     # region --- UI builders -------------------------------------------------------
     def _build_tabs(self) -> None:
@@ -135,13 +145,13 @@ class DigitalRubleApp(tk.Tk):
     def _build_user_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Пользователь")
-        for col in range(4):
-            tab.columnconfigure(col, weight=1, uniform="usercol")
+        tab.columnconfigure(0, weight=1)
 
-        wallet_frame = ttk.LabelFrame(tab, text="Цифровые кошельки")
-        wallet_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+        # 1. Создание цифрового кошелька
+        wallet_frame = ttk.LabelFrame(tab, text="Создание цифрового кошелька")
+        wallet_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         for col in range(4):
-            wallet_frame.columnconfigure(col, weight=1, uniform="walletcol")
+            wallet_frame.columnconfigure(col, weight=1)
 
         self.wallet_user_combo = ttk.Combobox(wallet_frame, state="readonly")
         self.wallet_user_combo.grid(row=0, column=0, padx=5, pady=5, columnspan=2, sticky="ew")
@@ -156,39 +166,11 @@ class DigitalRubleApp(tk.Tk):
             row=1, column=3, padx=5, pady=5, sticky="ew"
         )
 
-        offline_frame = ttk.LabelFrame(tab, text="Оффлайн кошелек")
-        offline_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
-        for col in range(5):
-            offline_frame.columnconfigure(col, weight=1, uniform="offlinecol")
-
-        self.offline_user_combo = ttk.Combobox(offline_frame, state="readonly")
-        self.offline_user_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        ttk.Button(
-            offline_frame, text="Активировать 14 дней", command=self._ui_open_offline
-        ).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Label(offline_frame, text="Сумма резерва:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
-        self.offline_amount = ttk.Entry(offline_frame)
-        self.offline_amount.insert(0, "500")
-        self.offline_amount.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
-        ttk.Button(offline_frame, text="Пополнить оффлайн", command=self._ui_fund_offline).grid(
-            row=0, column=4, padx=5, pady=5, sticky="ew"
-        )
-
-        ttk.Label(offline_frame, text="Адресат:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.offline_receiver_combo = ttk.Combobox(offline_frame, state="readonly")
-        self.offline_receiver_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        ttk.Label(offline_frame, text="Сумма:").grid(row=1, column=2, padx=5, pady=5, sticky="e")
-        self.offline_tx_amount = ttk.Entry(offline_frame)
-        self.offline_tx_amount.insert(0, "200")
-        self.offline_tx_amount.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
-        ttk.Button(offline_frame, text="Создать оффлайн-транзакцию", command=self._ui_offline_tx).grid(
-            row=1, column=4, padx=5, pady=5, sticky="ew"
-        )
-
+        # 2. Онлайн транзакции
         online_frame = ttk.LabelFrame(tab, text="Онлайн транзакции")
-        online_frame.grid(row=0, column=2, columnspan=2, sticky="nsew", padx=10, pady=10)
+        online_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
         for col in range(2):
-            online_frame.columnconfigure(col, weight=1, uniform="onlinecol")
+            online_frame.columnconfigure(col, weight=1)
 
         ttk.Label(online_frame, text="Отправитель:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.sender_combo = ttk.Combobox(online_frame, state="readonly")
@@ -206,6 +188,7 @@ class DigitalRubleApp(tk.Tk):
         )
         self.channel_combo.current(0)
         self.channel_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        self.channel_combo.bind("<<ComboboxSelected>>", self._on_channel_change)
 
         ttk.Label(online_frame, text="Сумма:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
         self.online_amount = ttk.Entry(online_frame)
@@ -215,10 +198,58 @@ class DigitalRubleApp(tk.Tk):
             row=4, column=0, columnspan=2, padx=5, pady=10, sticky="ew"
         )
 
-        contract_frame = ttk.LabelFrame(tab, text="Смарт-контракты")
-        contract_frame.grid(row=1, column=2, columnspan=2, sticky="nsew", padx=10, pady=10)
+        # 3. Открытие оффлайн кошелька
+        offline_wallet_frame = ttk.LabelFrame(tab, text="Открытие оффлайн кошелька")
+        offline_wallet_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
+        for col in range(3):
+            offline_wallet_frame.columnconfigure(col, weight=1)
+
+        self.offline_user_combo = ttk.Combobox(offline_wallet_frame, state="readonly")
+        self.offline_user_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        ttk.Button(
+            offline_wallet_frame, text="Открыть оффлайн кошелек", command=self._ui_open_offline
+        ).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Label(offline_wallet_frame, text="Сумма пополнения:").grid(
+            row=1, column=0, padx=5, pady=5, sticky="e"
+        )
+        self.offline_amount = ttk.Entry(offline_wallet_frame)
+        self.offline_amount.insert(0, "500")
+        self.offline_amount.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(offline_wallet_frame, text="Пополнить оффлайн", command=self._ui_fund_offline).grid(
+            row=1, column=2, padx=5, pady=5, sticky="ew"
+        )
+
+        # 4. Создание оффлайн транзакции
+        offline_tx_frame = ttk.LabelFrame(tab, text="Создание оффлайн транзакции")
+        offline_tx_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=10)
+        for col in range(4):
+            offline_tx_frame.columnconfigure(col, weight=1)
+
+        ttk.Label(offline_tx_frame, text="Отправитель:").grid(
+            row=0, column=0, padx=5, pady=5, sticky="e"
+        )
+        self.offline_sender_combo = ttk.Combobox(offline_tx_frame, state="readonly")
+        self.offline_sender_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(offline_tx_frame, text="Получатель:").grid(
+            row=1, column=0, padx=5, pady=5, sticky="e"
+        )
+        self.offline_receiver_combo = ttk.Combobox(offline_tx_frame, state="readonly")
+        self.offline_receiver_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        ttk.Label(offline_tx_frame, text="Сумма:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.offline_tx_amount = ttk.Entry(offline_tx_frame)
+        self.offline_tx_amount.insert(0, "200")
+        self.offline_tx_amount.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Button(
+            offline_tx_frame, text="Создать оффлайн-транзакцию", command=self._ui_offline_tx
+        ).grid(row=2, column=2, padx=5, pady=5, sticky="ew")
+
+        # 5. Создание смарт-контракта
+        contract_frame = ttk.LabelFrame(tab, text="Создание смарт-контракта")
+        contract_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=10)
         for col in range(2):
-            contract_frame.columnconfigure(col, weight=1, uniform="contractcol")
+            contract_frame.columnconfigure(col, weight=1)
 
         ttk.Label(contract_frame, text="ФЛ-отправитель:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.contract_sender_combo = ttk.Combobox(contract_frame, state="readonly")
@@ -242,19 +273,12 @@ class DigitalRubleApp(tk.Tk):
         self.contract_description.insert(0, "Автоплатеж за коммунальные услуги")
         self.contract_description.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
 
-        ttk.Label(contract_frame, text="Периодичность:").grid(row=5, column=0, padx=5, pady=5, sticky="e")
-        self.contract_schedule = ttk.Combobox(
-            contract_frame, values=["MONTHLY", "DAILY"], state="readonly"
-        )
-        self.contract_schedule.current(0)
-        self.contract_schedule.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
-
         ttk.Button(
             contract_frame, text="Создать смарт-контракт", command=self._ui_create_contract
-        ).grid(row=6, column=0, columnspan=2, pady=10, sticky="ew")
+        ).grid(row=5, column=0, columnspan=2, pady=10, sticky="ew")
         ttk.Button(
             contract_frame, text="Исполнить запланированные", command=self._ui_run_contracts
-        ).grid(row=7, column=0, columnspan=2, pady=5, sticky="ew")
+        ).grid(row=6, column=0, columnspan=2, pady=5, sticky="ew")
 
     def _build_bank_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -385,6 +409,7 @@ class DigitalRubleApp(tk.Tk):
             "Назначение",
             "Дата исполнения",
             "Сумма",
+            "Исполнен",
         ]
         self.contract_table = self._make_table(tab, columns, stretch=True)
         ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
@@ -419,6 +444,7 @@ class DigitalRubleApp(tk.Tk):
         self.notebook.add(tab, text="Распределенный реестр")
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
 
         table_frame = ttk.Frame(tab)
         table_frame.grid(row=0, column=0, sticky="nsew")
@@ -428,15 +454,29 @@ class DigitalRubleApp(tk.Tk):
             ["Номер блока", "Хеш блока", "Хеш родителя", "Узел", "Время создания"],
             stretch=True,
         )
+
+        utxo_frame = ttk.Frame(tab)
+        utxo_frame.grid(row=1, column=0, sticky="nsew")
+        self.utxo_table = self._make_table(
+            utxo_frame,
+            ["ID", "Владелец", "Сумма", "Статус", "Tx создания", "Tx списания"],
+            stretch=True,
+        )
+
         ttk.Button(tab, text="Экспортировать реестр", command=self._ui_export_registry).grid(
-            row=1, column=0, pady=5
+            row=2, column=0, pady=5
         )
 
     def _build_activity_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Информация о этапах")
-        self.activity_text = tk.Text(tab)
-        self.activity_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        container = ttk.Frame(tab)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        y_scroll = ttk.Scrollbar(container, orient="vertical")
+        y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.activity_text = tk.Text(container, yscrollcommand=y_scroll.set)
+        self.activity_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        y_scroll.config(command=self.activity_text.yview)
 
     # endregion -------------------------------------------------------------------
 
@@ -470,13 +510,14 @@ class DigitalRubleApp(tk.Tk):
 
     def _refresh_user_lists(self) -> None:
         users = self.platform.list_users()
-        formatted = [f"{u['id']} | {u['name']} ({u['user_type']})" for u in users]
+        formatted = [
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})" for u in users
+        ]
         # сохранить текущие выбранные значения, чтобы не сбрасывать выбор пользователя
         combos = [
             self.wallet_user_combo,
             self.offline_user_combo,
-            self.sender_combo,
-            self.receiver_combo,
+            self.offline_sender_combo,
             self.contract_sender_combo,
             self.offline_receiver_combo,
         ]
@@ -489,7 +530,7 @@ class DigitalRubleApp(tk.Tk):
                 elif not combo.get() and formatted:
                     combo.current(0)
         receivers = [
-            f"{u['id']} | {u['name']} ({u['user_type']})"
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in users
             if u["user_type"] in {"BUSINESS", "GOVERNMENT"}
         ]
@@ -510,6 +551,8 @@ class DigitalRubleApp(tk.Tk):
                     combo.set(old)
                 elif not combo.get() and bank_values:
                     combo.current(0)
+        # обновить списки для онлайн транзакций с учётом выбранного типа канала
+        self._refresh_online_combos()
 
     def _refresh_tables(self) -> None:
         def clear(tree):
@@ -525,7 +568,7 @@ class DigitalRubleApp(tk.Tk):
                     tk.END,
                     values=(
                         u["id"],
-                        u["user_type"],
+                        self._user_type_label(u["user_type"]),
                         f"{u['fiat_balance']:.2f}",
                         u["wallet_status"],
                         f"{u['digital_balance']:.2f}",
@@ -573,6 +616,10 @@ class DigitalRubleApp(tk.Tk):
         if self.contract_table:
             clear(self.contract_table)
             for sc in self.platform.get_smart_contracts():
+                if sc["status"] == "EXECUTED":
+                    exec_state = sc.get("last_execution") or "Исполнен"
+                else:
+                    exec_state = "Ожидает исполнения"
                 self.contract_table.insert(
                     "",
                     tk.END,
@@ -584,6 +631,7 @@ class DigitalRubleApp(tk.Tk):
                         sc["description"],
                         sc["next_execution"],
                         f"{sc['amount']:.2f}",
+                        exec_state,
                     ),
                 )
 
@@ -602,6 +650,30 @@ class DigitalRubleApp(tk.Tk):
                         (row["previous_hash"] or "")[:12] + "...",
                         row["signer"],
                         row["timestamp"],
+                    ),
+                )
+
+        if self.utxo_table:
+            clear(self.utxo_table)
+            rows = self.platform.db.execute(
+                """
+                SELECT id, owner_id, amount, status, created_tx_id, COALESCE(spent_tx_id, '-') AS spent_tx_id
+                FROM utxos
+                ORDER BY created_at DESC
+                """,
+                fetchall=True,
+            )
+            for row in rows or []:
+                self.utxo_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        row["id"],
+                        row["owner_id"],
+                        f"{row['amount']:.2f}",
+                        row["status"],
+                        row["created_tx_id"],
+                        row["spent_tx_id"],
                     ),
                 )
 
@@ -656,9 +728,14 @@ class DigitalRubleApp(tk.Tk):
 
         if self.activity_text:
             self.activity_text.delete("1.0", tk.END)
+            self.activity_text.tag_configure("conflict", foreground="red")
             for entry in self.platform.get_activity_log():
                 line = f"[{entry['created_at']}] {entry['stage']} | {entry['actor']} -> {entry['details']}\n"
-                self.activity_text.insert(tk.END, line)
+                lower = (entry["stage"] + entry["details"]).lower()
+                if "конфликт" in lower or "двойной трат" in lower:
+                    self.activity_text.insert(tk.END, line, "conflict")
+                else:
+                    self.activity_text.insert(tk.END, line)
             self.activity_text.see(tk.END)
 
         if self.cbr_log:
@@ -676,8 +753,8 @@ class DigitalRubleApp(tk.Tk):
         canvas.delete("all")
         nodes = self.platform.consensus.get_nodes()
         width = int(canvas.winfo_width() or 1200)
-        spacing = width // (len(nodes) + 1)
-        y = 110
+        leader = nodes[0]
+        bank_nodes = nodes[1:]
         # если запущена анимация – берём активный узел из неё,
         # иначе подсвечиваем узел последнего события
         active_actor = self._consensus_active_actor
@@ -685,21 +762,49 @@ class DigitalRubleApp(tk.Tk):
             recent_events = self.platform.consensus.get_recent_events(limit=1)
             active_actor = recent_events[0].actor if recent_events else None
 
-        for idx, node in enumerate(nodes, start=1):
-            x = spacing * idx
-            fill_color = "#10b981" if node == active_actor else "#2563eb"
-            outline = "#0f172a"
-            canvas.create_oval(x - 40, y - 40, x + 40, y + 40, fill=fill_color, outline=outline, width=2)
-            canvas.create_text(x, y, text=node, fill="black", width=120)
-            if idx < len(nodes):
+        # координаты лидера (ЦБ) в верхней строке
+        leader_x = width // 2
+        leader_y = 70
+        # подсветка в зависимости от состояния (нормальный / LAG / FAULT)
+        if active_actor == leader and self._consensus_active_state in {"FAULT"}:
+            leader_fill = "#ef4444"
+        elif active_actor == leader and self._consensus_active_state in {"LAG"}:
+            leader_fill = "#facc15"
+        elif active_actor == leader:
+            leader_fill = "#10b981"
+        else:
+            leader_fill = "#2563eb"
+        canvas.create_oval(
+            leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, fill=leader_fill, outline="#0f172a", width=2
+        )
+        canvas.create_text(leader_x, leader_y, text=leader, fill="black", width=140)
+
+        # банки (ФО) второй строкой, стрелки от ЦБ к каждому
+        if bank_nodes:
+            spacing = max(width // (len(bank_nodes) + 1), 140)
+            y_banks = 170
+            for idx, node in enumerate(bank_nodes, start=1):
+                x = spacing * idx
+                if node == active_actor and self._consensus_active_state == "FAULT":
+                    fill_color = "#ef4444"
+                elif node == active_actor and self._consensus_active_state == "LAG":
+                    fill_color = "#facc15"
+                elif node == active_actor:
+                    fill_color = "#10b981"
+                else:
+                    fill_color = "#2563eb"
+                canvas.create_oval(
+                    x - 35, y_banks - 35, x + 35, y_banks + 35, fill=fill_color, outline="#0f172a", width=2
+                )
+                canvas.create_text(x, y_banks, text=node, fill="black", width=120)
                 canvas.create_line(
-                    x + 40,
-                    y,
-                    x + spacing - 40,
-                    y,
+                    leader_x,
+                    leader_y + 45,
+                    x,
+                    y_banks - 35,
                     arrow=tk.LAST,
                     fill="#059669",
-                    width=3,
+                    width=2,
                 )
         stats = self.platform.consensus.stats()
         subtitle = self._consensus_active_event or ""
@@ -709,10 +814,32 @@ class DigitalRubleApp(tk.Tk):
             text=f"Раунды консенсуса: {stats['rounds']} | Последний блок: {stats['last_block']}",
             fill="black",
         )
-        if subtitle:
+        # кворум PREPARE/COMMIT для последнего блока
+        if stats["last_block"] != "-":
+            qrows = self.platform.db.execute(
+                """
+                SELECT state, COUNT(*) as cnt
+                FROM consensus_events
+                WHERE block_hash = ? AND state IN ('PREPARE_MSG','COMMIT_MSG')
+                GROUP BY state
+                """,
+                (stats["last_block"],),
+                fetchall=True,
+            )
+            counts = {row["state"]: row["cnt"] for row in qrows or []}
+            total_banks = max(len(nodes) - 1, 1)
+            prepare_q = counts.get("PREPARE_MSG", 0)
+            commit_q = counts.get("COMMIT_MSG", 0)
             canvas.create_text(
                 width // 2,
                 30,
+                text=f"Кворум PREPARE: {prepare_q}/{total_banks} | Кворум COMMIT: {commit_q}/{total_banks}",
+                fill="#4b5563",
+            )
+        if subtitle:
+            canvas.create_text(
+                width // 2,
+                48,
                 text=subtitle,
                 fill="#4b5563",
             )
@@ -771,6 +898,46 @@ class DigitalRubleApp(tk.Tk):
     # endregion -------------------------------------------------------------------
 
     # region --- Button callbacks --------------------------------------------------
+    def _refresh_online_combos(self) -> None:
+        """Обновить списки отправителя и получателя с учётом выбранного типа перевода."""
+        if not self.sender_combo or not self.receiver_combo:
+            return
+        channel = self.channel_combo.get() if self.channel_combo else "C2C"
+        mapping = {
+            "C2C": ("INDIVIDUAL", "INDIVIDUAL"),
+            "C2B": ("INDIVIDUAL", "BUSINESS"),
+            "B2C": ("BUSINESS", "INDIVIDUAL"),
+            "B2B": ("BUSINESS", "BUSINESS"),
+            "G2B": ("GOVERNMENT", "BUSINESS"),
+            "B2G": ("BUSINESS", "GOVERNMENT"),
+            "C2G": ("INDIVIDUAL", "GOVERNMENT"),
+            "G2C": ("GOVERNMENT", "INDIVIDUAL"),
+        }
+        sender_type, receiver_type = mapping.get(channel, ("INDIVIDUAL", "INDIVIDUAL"))
+        senders = [
+            f"{u['id']} | {u['name']} ({u['user_type']})"
+            for u in self.platform.list_users(sender_type)
+        ]
+        receivers = [
+            f"{u['id']} | {u['name']} ({u['user_type']})"
+            for u in self.platform.list_users(receiver_type)
+        ]
+        old_sender = self.sender_combo.get()
+        self.sender_combo["values"] = senders
+        if old_sender in senders:
+            self.sender_combo.set(old_sender)
+        elif senders:
+            self.sender_combo.current(0)
+
+        old_receiver = self.receiver_combo.get()
+        self.receiver_combo["values"] = receivers
+        if old_receiver in receivers:
+            self.receiver_combo.set(old_receiver)
+        elif receivers:
+            self.receiver_combo.current(0)
+
+    def _on_channel_change(self, event=None) -> None:
+        self._refresh_online_combos()
     def _ui_refresh_consensus(self) -> None:
         """Обновить таблицу и перезапустить анимацию консенсуса/реестра."""
         self.refresh_all()
@@ -867,6 +1034,9 @@ class DigitalRubleApp(tk.Tk):
             already_open = user["offline_status"] == "OPEN"
             self.platform.open_offline_wallet(user_id)
             self.refresh_all()
+            # синхронизировать подпись отправителя в блоке оффлайн-транзакций
+            if self.offline_sender_label:
+                self.offline_sender_label.config(text=self.offline_user_combo.get() or user["name"])
             if already_open:
                 messagebox.showinfo("Оффлайн-кошелек", f"Оффлайн-кошелек пользователя {user['name']} уже активен")
             else:
@@ -890,7 +1060,10 @@ class DigitalRubleApp(tk.Tk):
 
     def _ui_offline_tx(self) -> None:
         try:
-            sender_id = self._selected_id(self.offline_user_combo.get())
+            sender_source = (
+                self.offline_sender_combo.get() if self.offline_sender_combo else self.offline_user_combo.get()
+            )
+            sender_id = self._selected_id(sender_source)
             receiver_id = self._selected_id(self.offline_receiver_combo.get())
             amount = float(self.offline_tx_amount.get())
             self.platform.create_offline_transaction(sender_id, receiver_id, amount)
@@ -918,9 +1091,8 @@ class DigitalRubleApp(tk.Tk):
             bank_id = self._selected_id(self.contract_bank_combo.get())
             amount = float(self.contract_amount.get())
             description = self.contract_description.get()
-            schedule = self.contract_schedule.get()
             self.platform.create_smart_contract(
-                sender_id, receiver_id, bank_id, amount, description, schedule
+                sender_id, receiver_id, bank_id, amount, description
             )
             self.refresh_all()
             messagebox.showinfo("Смарт-контракт", "Контракт создан")
