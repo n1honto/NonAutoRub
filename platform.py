@@ -867,7 +867,9 @@ class DigitalRublePlatform:
             raise ValueError("Получатель должен быть ЮЛ или госорган")
         contract_id = generate_id("sc")
         # Одноразовый смарт-контракт, исполняется только по явному запросу
-        # next_execution устанавливаем в NULL, чтобы контракт не исполнялся автоматически
+        # next_execution устанавливаем в дату далекого будущего (через 100 лет),
+        # чтобы контракт не исполнялся автоматически, но поле не было NULL
+        far_future = datetime.utcnow() + timedelta(days=36500)  # ~100 лет в будущем
         self.db.execute(
             """
             INSERT INTO smart_contracts(id, creator_id, beneficiary_id, bank_id, amount,
@@ -883,7 +885,7 @@ class DigitalRublePlatform:
                 amount,
                 description,
                 "ONCE",
-                None,  # NULL - контракт не будет исполняться автоматически
+                far_future.isoformat(),  # Дата в далеком будущем - контракт не будет исполняться автоматически
                 amount,
             ),
         )

@@ -973,12 +973,6 @@ class DigitalRubleApp(tk.Tk):
                 )
         stats = self.platform.consensus.stats()
         subtitle = self._consensus_active_event or ""
-        canvas.create_text(
-            width // 2,
-            15,
-            text=f"Раунды консенсуса: {stats['rounds']} | Последний блок: {stats['last_block']}",
-            fill="black",
-        )
         # кворум PREPARE/COMMIT для последнего блока
         if stats["last_block"] != "-":
             qrows = self.platform.db.execute(
