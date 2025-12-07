@@ -15,7 +15,6 @@ def _hash_payload(payload: str) -> str:
 
 
 def merkle_root(hashes: List[str]) -> str:
-    """Compute a Merkle root for a list of transaction hashes."""
     if not hashes:
         return _hash_payload("EMPTY")
     layer = [h for h in hashes]
@@ -27,7 +26,6 @@ def merkle_root(hashes: List[str]) -> str:
             next_layer.append(_hash_payload(left + right))
         layer = next_layer
     return layer[0]
-
 
 @dataclass
 class Block:
@@ -60,7 +58,6 @@ class Block:
 
 
 class DistributedLedger:
-    """Persistence-aware ledger that stores its blocks in SQLite."""
 
     def __init__(self, db: DatabaseManager) -> None:
         self.db = db

@@ -7,7 +7,6 @@ from typing import Any, Iterable
 
 
 class DatabaseManager:
-    """Thread-safe wrapper around SQLite that initializes the schema on demand."""
 
     def __init__(self, db_name: str = "digital_ruble.db") -> None:
         self.db_path = Path(db_name).resolve()
@@ -221,13 +220,34 @@ class DatabaseManager:
                 FOREIGN KEY (spent_tx_id) REFERENCES transactions(id)
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS failed_transactions (
+                id TEXT PRIMARY KEY,
+                tx_id TEXT,
+                contract_id TEXT,
+                error_type TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                resolved INTEGER DEFAULT 0,
+                FOREIGN KEY (tx_id) REFERENCES transactions(id)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS system_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                error_type TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                context TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                resolved INTEGER DEFAULT 0
+            );
+            """,
         ]
         with self._cursor() as cur:
             for stmt in schema_statements:
                 cur.execute(stmt)
 
     def _backfill_legacy_schema(self) -> None:
-        """Ensure старые БД получают недостающие столбцы."""
         self._ensure_columns(
             "blocks",
             {
@@ -248,6 +268,12 @@ class DatabaseManager:
                 "user_sig": "TEXT",
                 "bank_sig": "TEXT",
                 "cbr_sig": "TEXT",
+            },
+        )
+        self._ensure_columns(
+            "failed_transactions",
+            {
+                "contract_id": "TEXT",
             },
         )
         self._ensure_block_heights()

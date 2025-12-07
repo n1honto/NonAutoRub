@@ -1,0 +1,1281 @@
+from __future__ import annotations
+
+import logging
+import random
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+from consensus import MasterchainConsensus  # type: ignore
+from database import DatabaseManager  # type: ignore
+from ledger import DistributedLedger  # type: ignore
+import hashlib
+
+logging.basicConfig(
+    filename="digital_ruble.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
+
+def generate_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+CRYPTO_SECRET = "druble-sim-secret"
+
+
+def _hash_str(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _private_key(owner_type: str, owner_id: int) -> str:
+    return _hash_str(f"{CRYPTO_SECRET}:{owner_type}:{owner_id}")
+
+
+def _sign(owner_type: str, owner_id: int, payload: str) -> str:
+    pk = _private_key(owner_type, owner_id)
+    return _hash_str(payload + pk)
+
+
+def _verify(owner_type: str, owner_id: int, payload: str, signature: str) -> bool:
+    return signature == _sign(owner_type, owner_id, payload)
+
+
+@dataclass
+class TransactionContext:
+    sender_id: int
+    receiver_id: int
+    amount: float
+    tx_type: str
+    channel: str
+    bank_id: int
+    notes: str = ""
+    offline_flag: int = 0
+
+
+class MetricsCollector:
+    def __init__(self, db: DatabaseManager) -> None:
+        self.db = db
+
+    def increment(self, key: str, delta: float = 1) -> None:
+        row = self.db.execute(
+            "SELECT value FROM metrics WHERE key = ?", (key,), fetchone=True
+        )
+        value = (row["value"] if row else 0) + delta
+        if row:
+            self.db.execute(
+                "UPDATE metrics SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                (value, key),
+            )
+        else:
+            self.db.execute(
+                "INSERT INTO metrics(key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
+    def set_value(self, key: str, value: float) -> None:
+        row = self.db.execute(
+            "SELECT value FROM metrics WHERE key = ?", (key,), fetchone=True
+        )
+        if row:
+            self.db.execute(
+                "UPDATE metrics SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                (value, key),
+            )
+        else:
+            self.db.execute(
+                "INSERT INTO metrics(key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
+    def snapshot(self) -> Dict[str, float]:
+        rows = self.db.execute("SELECT key, value FROM metrics", fetchall=True)
+        return {row["key"]: row["value"] for row in rows} if rows else {}
+
+
+class DigitalRublePlatform:
+    def __init__(self) -> None:
+        self.db = DatabaseManager()
+        self.ledger = DistributedLedger(self.db)
+        self.consensus = MasterchainConsensus(self.db)
+        self.metrics = MetricsCollector(self.db)
+        # Пользователи, банки и транзакции не создаются автоматически –
+        # всё управление выполняется пользователем из вкладки "Управление".
+        self._ensure_seed_state()
+        self._lagging_bank_id: Optional[int] = None
+
+    # region --- Bootstrap helpers -------------------------------------------------
+    def _ensure_seed_state(self) -> None:
+        # Инициализация только технических структур (генезис‑блок и т.п.).
+        # Автоматическое создание банков, пользователей и транзакций отключено.
+        return
+
+    def reset_state(self) -> None:
+        """Полный сброс имитационной модели для чистого старта.
+
+        Удаляются все пользователи, банки, транзакции, смарт‑контракты,
+        оффлайн‑операции, запросы на эмиссию, события консенсуса и т.д.
+        В реестре сохраняется только генезис‑блок (height = 0).
+        """
+        # Отключаем проверку внешних ключей временно для безопасного удаления
+        self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            # Удаляем в правильном порядке: сначала зависимые таблицы, потом основные
+            # 1. Таблицы, зависящие от transactions и blocks
+            self.db.execute("DELETE FROM offline_transactions")
+            self.db.execute("DELETE FROM block_transactions")
+            self.db.execute("DELETE FROM utxos")
+            
+            # 2. Таблицы без внешних ключей
+            self.db.execute("DELETE FROM consensus_events")
+            self.db.execute("DELETE FROM activity_log")
+            self.db.execute("DELETE FROM metrics")
+            
+            # 3. Таблицы, зависящие от users и banks
+            self.db.execute("DELETE FROM smart_contracts")
+            self.db.execute("DELETE FROM issuance_requests")
+            self.db.execute("DELETE FROM government_institutions")
+            
+            # 4. Основные таблицы
+            self.db.execute("DELETE FROM transactions")
+            self.db.execute("DELETE FROM users")
+            self.db.execute("DELETE FROM banks")
+            
+            # 5. Блоки (после удаления block_transactions)
+            self.db.execute("DELETE FROM blocks WHERE height > 0")
+            
+            # Сбросить автоинкрементные счётчики, чтобы ID начинались снова с 1
+            try:
+                self.db.execute(
+                    "DELETE FROM sqlite_sequence WHERE name IN "
+                    "('users','banks','government_institutions','activity_log','blocks')"
+                )
+            except Exception:
+                # sqlite_sequence может отсутствовать – это не критично для работы модели
+                pass
+        finally:
+            # Включаем обратно проверку внешних ключей
+            self.db.execute("PRAGMA foreign_keys = ON")
+        
+        # Удалить локальные БД банков
+        from pathlib import Path
+
+        for path in Path(".").glob("bank_*.db"):
+            try:
+                path.unlink()
+            except OSError:
+                continue
+
+    def create_banks(self, count: int) -> List[int]:
+        bank_ids: List[int] = []
+        # Чтобы избежать нарушения UNIQUE по имени банка, подбираем
+        # следующий свободный числовой суффикс исходя из уже существующих имён.
+        existing = self.db.execute("SELECT name FROM banks", fetchall=True) or []
+        max_index = 0
+        for row in existing:
+            parts = str(row["name"]).split()
+            if parts and parts[-1].isdigit():
+                max_index = max(max_index, int(parts[-1]))
+        for idx in range(count):
+            name = f"Финансовая организация {max_index + idx + 1}"
+            self.db.execute(
+                "INSERT INTO banks(name) VALUES(?)",
+                (name,),
+            )
+            row = self.db.execute(
+                "SELECT id FROM banks WHERE name = ?", (name,), fetchone=True
+            )
+            bank_id = row["id"]
+            bank_ids.append(bank_id)
+            # Локальная база данных конкретного банка (узла ФО)
+            # для моделирования распределённого хранения.
+            from database import DatabaseManager  # локальный импорт во избежание циклов
+
+            DatabaseManager(f"bank_{bank_id}.db")
+            self._log_activity(
+                actor=name,
+                stage="Регистрация ФО",
+                details=f"Финансовая организация {name} зарегистрирована в системе",
+                context="Управление",
+            )
+        return bank_ids
+
+    def create_users(self, count: int, user_type: str) -> List[int]:
+        users: List[int] = []
+        banks = self.list_banks()
+        if not banks:
+            raise RuntimeError("Нет доступных финансовых организаций")
+        for _ in range(count):
+            bank = random.choice(banks)
+            label = {
+                "INDIVIDUAL": "Физическое лицо",
+                "BUSINESS": "Юридическое лицо",
+                "GOVERNMENT": "Государственное учреждение",
+            }[user_type]
+            name = f"{label} #{uuid.uuid4().hex[:4]}"
+            self.db.execute(
+                """
+                INSERT INTO users(name, user_type, bank_id)
+                VALUES (?, ?, ?)
+                """,
+                (name, user_type, bank["id"]),
+            )
+            row = self.db.execute(
+                "SELECT id FROM users WHERE name = ? ORDER BY id DESC LIMIT 1",
+                (name,),
+                fetchone=True,
+            )
+            user_id = row["id"]
+            users.append(user_id)
+            self._log_activity(
+                actor=name,
+                stage="Создание участника",
+                details=f"Создан пользователь типа {user_type}",
+                context="Управление",
+            )
+        return users
+
+    def create_government_institutions(self, count: int) -> List[int]:
+        ids = self.create_users(count, "GOVERNMENT")
+        for user_id in ids:
+            user = self.get_user(user_id)
+            self.db.execute(
+                "INSERT INTO government_institutions(user_id, name) VALUES (?, ?)",
+                (user_id, user["name"]),
+            )
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="Регистрация госоргана",
+                details=f"Гос. учреждение {user['name']} зарегистрировано",
+                context="Управление",
+            )
+        return ids
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Queries -----------------------------------------------------------
+    def list_banks(self) -> List[Dict]:
+        rows = self.db.execute("SELECT * FROM banks", fetchall=True)
+        return [dict(row) for row in rows] if rows else []
+
+    def list_users(self, user_type: str | None = None) -> List[Dict]:
+        if user_type:
+            rows = self.db.execute(
+                "SELECT * FROM users WHERE user_type = ? ORDER BY id",
+                (user_type,),
+                fetchall=True,
+            )
+        else:
+            rows = self.db.execute("SELECT * FROM users ORDER BY id", fetchall=True)
+        return [dict(row) for row in rows] if rows else []
+
+    def get_user(self, user_id: int) -> Dict:
+        row = self.db.execute("SELECT * FROM users WHERE id = ?", (user_id,), fetchone=True)
+        if not row:
+            raise ValueError("Пользователь не найден")
+        return dict(row)
+
+    def get_transactions(self, tx_type: Optional[str] = None) -> List[Dict]:
+        if tx_type:
+            rows = self.db.execute(
+                "SELECT * FROM transactions WHERE tx_type = ? ORDER BY timestamp DESC",
+                (tx_type,),
+                fetchall=True,
+            )
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM transactions ORDER BY timestamp DESC",
+                fetchall=True,
+            )
+        return [dict(row) for row in rows] if rows else []
+
+    def get_offline_transactions(self) -> List[Dict]:
+        rows = self.db.execute(
+            """
+            SELECT t.*, o.status as offline_status, o.synced_at, o.conflict_reason
+            FROM offline_transactions o
+            JOIN transactions t ON t.id = o.tx_id
+            ORDER BY t.timestamp DESC
+            """,
+            fetchall=True,
+        )
+        return [dict(row) for row in rows] if rows else []
+
+    def get_smart_contracts(self) -> List[Dict]:
+        rows = self.db.execute(
+            "SELECT * FROM smart_contracts ORDER BY next_execution ASC",
+            fetchall=True,
+        )
+        return [dict(row) for row in rows] if rows else []
+
+    def get_activity_log(self, limit: int = 200) -> List[Dict]:
+        rows = self.db.execute(
+            """
+            SELECT actor, stage, details, context, created_at
+            FROM activity_log
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+            fetchall=True,
+        )
+        return [dict(row) for row in rows] if rows else []
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Wallet operations -------------------------------------------------
+    def open_digital_wallet(self, user_id: int) -> None:
+        user = self.get_user(user_id)
+        if user["wallet_status"] == "OPEN":
+            return
+        self.db.execute(
+            "UPDATE users SET wallet_status = 'OPEN' WHERE id = ?",
+            (user_id,),
+        )
+        self._log_activity(
+            actor=user["name"],
+            stage="Открытие цифрового кошелька",
+            details="Цифровой кошелек активирован пользователем",
+            context="Пользователь",
+        )
+
+    def exchange_to_digital(self, user_id: int, amount: float) -> None:
+        if amount <= 0:
+            raise ValueError("Сумма должна быть положительной")
+        user = self.get_user(user_id)
+        if user["wallet_status"] != "OPEN":
+            raise ValueError("Необходимо открыть цифровой кошелек")
+        if user["fiat_balance"] < amount:
+            raise ValueError("Недостаточно средств на безналичном счете")
+        self.db.execute(
+            """
+            UPDATE users
+            SET fiat_balance = fiat_balance - ?, digital_balance = digital_balance + ?
+            WHERE id = ?
+            """,
+            (amount, amount, user_id),
+        )
+        self.metrics.increment("fiat_to_digital", amount)
+        # Зафиксировать конвертацию как отдельную операцию в журнале транзакций + создать UTXO
+        context = TransactionContext(
+            sender_id=user_id,
+            receiver_id=user_id,
+            amount=amount,
+            tx_type="EXCHANGE",
+            channel="FIAT2DR",
+            bank_id=user["bank_id"],
+            notes="Конвертация безналичных средств в цифровые рубли",
+        )
+        tx = self._create_transaction_record(context, status="CONFIRMED")
+        self._create_utxo(user_id, amount, tx["id"])
+        self._log_activity(
+            actor=user["name"],
+            stage="Конвертация средств",
+            details=f"Пополнение цифрового кошелька на {amount:.2f} ЦР",
+            context="Пользователь",
+        )
+
+    def open_offline_wallet(self, user_id: int) -> None:
+        user = self.get_user(user_id)
+        if user["offline_status"] == "OPEN":
+            return
+        activation = datetime.utcnow()
+        expiration = activation + timedelta(days=14)
+        self.db.execute(
+            """
+            UPDATE users
+            SET offline_status = 'OPEN',
+                offline_activated_at = ?,
+                offline_expires_at = ?
+            WHERE id = ?
+            """,
+            (
+                activation.isoformat(),
+                expiration.isoformat(),
+                user_id,
+            ),
+        )
+        self._log_activity(
+            actor=user["name"],
+            stage="Активация оффлайн-кошелька",
+            details="Оффлайн кошелек активирован на 14 дней",
+            context="Пользователь",
+        )
+
+    def fund_offline_wallet(self, user_id: int, amount: float) -> None:
+        if amount <= 0:
+            raise ValueError("Сумма должна быть положительной")
+        user = self.get_user(user_id)
+        if user["offline_status"] != "OPEN":
+            raise ValueError("Оффлайн кошелек не активирован")
+        if user["digital_balance"] < amount:
+            raise ValueError("Недостаточно средств на цифровом кошельке")
+        self.db.execute(
+            """
+            UPDATE users
+            SET digital_balance = digital_balance - ?, offline_balance = offline_balance + ?
+            WHERE id = ?
+            """,
+            (amount, amount, user_id),
+        )
+        self.metrics.increment("offline_reserved", amount)
+        # Создать транзакцию для пополнения оффлайн кошелька
+        context = TransactionContext(
+            sender_id=user_id,
+            receiver_id=user_id,
+            amount=amount,
+            tx_type="EXCHANGE",
+            channel="OFFLINE_FUND",
+            bank_id=user["bank_id"],
+            notes="Пополнение оффлайн кошелька из цифрового кошелька",
+        )
+        self._create_transaction_record(context, status="CONFIRMED")
+        self._log_activity(
+            actor=user["name"],
+            stage="Резерв для оффлайн",
+            details=f"В оффлайн кошелек переведено {amount:.2f} ЦР",
+            context="Пользователь",
+        )
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Transaction lifecycles -------------------------------------------
+    def create_online_transaction(
+        self, sender_id: int, receiver_id: int, amount: float, channel: str
+    ) -> Dict:
+        if amount <= 0:
+            raise ValueError("Сумма должна быть положительной")
+        if sender_id == receiver_id:
+            raise ValueError("Нельзя отправить перевод самому себе")
+        sender = self.get_user(sender_id)
+        receiver = self.get_user(receiver_id)
+        if sender["wallet_status"] != "OPEN":
+            raise ValueError("У отправителя не открыт цифровой кошелек")
+        if receiver["wallet_status"] != "OPEN":
+            raise ValueError("У получателя не открыт цифровой кошелек")
+        if sender["digital_balance"] < amount:
+            self._log_activity(
+                actor=sender["name"],
+                stage="Валидация ФО",
+                details="Недостаточно средств для онлайн транзакции",
+                context="Ошибки",
+            )
+            raise ValueError("Недостаточно средств")
+        context = TransactionContext(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            amount=amount,
+            tx_type="ONLINE",
+            channel=channel,
+            bank_id=sender["bank_id"],
+        )
+        self._log_online_transaction(sender, receiver, amount)
+        tx = self._finalize_transaction(context)
+        self._apply_balances(sender_id, receiver_id, amount, mode="digital")
+        return tx
+
+    def create_offline_transaction(
+        self, sender_id: int, receiver_id: int, amount: float
+    ) -> Dict:
+        if sender_id == receiver_id:
+            raise ValueError("Нельзя создать оффлайн-перевод самому себе")
+        sender = self.get_user(sender_id)
+        receiver = self.get_user(receiver_id)
+        if sender["offline_status"] != "OPEN":
+            raise ValueError("У отправителя не активирован оффлайн-кошелек")
+        if receiver["offline_status"] != "OPEN":
+            raise ValueError("У получателя не активирован оффлайн-кошелек")
+        if sender["offline_balance"] < amount:
+            raise ValueError("Недостаточно средств в оффлайн кошельке")
+        context = TransactionContext(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            amount=amount,
+            tx_type="OFFLINE",
+            channel="C2C",
+            bank_id=sender["bank_id"],
+            offline_flag=1,
+            notes="Оффлайн платеж, ожидает синхронизации",
+        )
+        bank = self._get_bank(sender["bank_id"])
+        self._log_offline_flow(sender, receiver, bank["name"])
+        tx = self._create_transaction_record(context, status="OFFLINE_BUFFER")
+        self.db.execute(
+            """
+            INSERT INTO offline_transactions(id, tx_id, status)
+            VALUES (?, ?, 'ОФФЛАЙН')
+            """,
+            (generate_id("off"), tx["id"]),
+        )
+        self.db.execute(
+            "UPDATE users SET offline_balance = offline_balance - ? WHERE id = ?",
+            (amount, sender_id),
+        )
+        self._log_activity(
+            actor=sender["name"],
+            stage="Локальное хранение",
+            details="Операция помещена в локальное оффлайн хранилище",
+            context="Оффлайн",
+        )
+        return tx
+
+    def sync_offline_transactions(self) -> Dict[str, int]:
+        rows = self.db.execute(
+            """
+            SELECT o.id as offline_id, t.*
+            FROM offline_transactions o
+            JOIN transactions t ON t.id = o.tx_id
+            WHERE o.status = 'ОФФЛАЙН'
+            """,
+            fetchall=True,
+        )
+        processed = 0
+        conflicts = 0
+        for row in rows:
+            self.db.execute(
+                "UPDATE offline_transactions SET status = 'ПОСТУПИЛО В ОБРАБОТКУ' WHERE id = ?",
+                (row["offline_id"],),
+            )
+            sender = self.get_user(row["sender_id"])
+            receiver = self.get_user(row["receiver_id"])
+            bank = self._get_bank(row["bank_id"])
+            if sender["digital_balance"] + sender["offline_balance"] < row["amount"]:
+                conflicts += 1
+                self.db.execute(
+                    "UPDATE offline_transactions SET status = 'КОНФЛИКТ', conflict_reason = ? WHERE id = ?",
+                    ("Обнаружено двойное расходование", row["offline_id"]),
+                )
+                self._log_offline_sync_steps(
+                    tx_id=row["id"],
+                    sender=sender["name"],
+                    receiver=receiver["name"],
+                    bank_name=bank["name"],
+                    conflict=True,
+                )
+                self._log_activity(
+                    actor="ЦБ РФ",
+                    stage="Конфликт оффлайн УТХО",
+                    details=f"Транзакция {row['id']} отклонена из-за двойной траты",
+                    context="Оффлайн",
+                )
+                continue
+            processed += 1
+            self._apply_balances(
+                row["sender_id"],
+                row["receiver_id"],
+                row["amount"],
+                mode="digital",
+            )
+            self.db.execute(
+                "UPDATE transactions SET status = 'CONFIRMED', notes = 'Синхронизация завершена' WHERE id = ?",
+                (row["id"],),
+            )
+            self.db.execute(
+                "UPDATE offline_transactions SET status = 'ОБРАБОТАНА', synced_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["offline_id"],),
+            )
+            block = self.ledger.append_block([dict(row)], signer="ЦБ РФ")
+            # цифровая подпись ЦБ и обновление UTXO для оффлайн-платежа
+            cbr_sig = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+                (cbr_sig, row["id"]),
+            )
+            self._spend_utxos(row["sender_id"], row["amount"], row["id"])
+            self._create_utxo(row["receiver_id"], row["amount"], row["id"])
+            self.consensus.run_round(block.hash)
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="Обработка оффлайн транзакции",
+                details=f"Транзакция {row['id']} включена в блок {block.height}",
+                context="Оффлайн",
+            )
+            self._log_offline_sync_steps(
+                tx_id=row["id"],
+                sender=sender["name"],
+                receiver=receiver["name"],
+                bank_name=bank["name"],
+                conflict=False,
+            )
+        return {"processed": processed, "conflicts": conflicts}
+
+    def _finalize_transaction(self, context: TransactionContext) -> Dict:
+        tx = self._create_transaction_record(context, status="CONFIRMED")
+        # обновление UTXO: списать у отправителя, создать для получателя
+        self._spend_utxos(context.sender_id, context.amount, tx["id"])
+        self._create_utxo(context.receiver_id, context.amount, tx["id"])
+        block = self.ledger.append_block([tx], signer="ЦБ РФ")
+        # цифровая подпись ЦБ для транзакции
+        cbr_sig = _sign("CBR", 0, block.hash)
+        self.db.execute(
+            "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+            (cbr_sig, tx["id"]),
+        )
+        self.consensus.run_round(block.hash)
+        self._log_block_flow(block, context)
+        return tx
+
+    def _create_transaction_record(
+        self, context: TransactionContext, status: str
+    ) -> Dict:
+        tx_id = generate_id("tx")
+        timestamp = datetime.utcnow().isoformat()
+        tx_hash = self._hash_transaction(
+            tx_id,
+            context.sender_id,
+            context.receiver_id,
+            context.amount,
+            timestamp,
+        )
+        payload = f"{tx_id}:{context.sender_id}:{context.receiver_id}:{context.amount}:{timestamp}"
+        user_sig = _sign("USER", context.sender_id, payload)
+        bank_sig = _sign("BANK", context.bank_id, payload)
+        self.db.execute(
+            """
+            INSERT INTO transactions(id, sender_id, receiver_id, amount,
+                                     tx_type, channel, status, timestamp,
+                                     bank_id, hash, offline_flag, notes,
+                                     user_sig, bank_sig, cbr_sig)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                tx_id,
+                context.sender_id,
+                context.receiver_id,
+                context.amount,
+                context.tx_type,
+                context.channel,
+                status,
+                timestamp,
+                context.bank_id,
+                tx_hash,
+                context.offline_flag,
+                context.notes,
+                user_sig,
+                bank_sig,
+            ),
+        )
+        self.consensus.log_transaction(tx_hash)
+        return {
+            "id": tx_id,
+            "hash": tx_hash,
+            "timestamp": timestamp,
+            "amount": context.amount,
+            "sender_id": context.sender_id,
+            "receiver_id": context.receiver_id,
+            "tx_type": context.tx_type,
+            "channel": context.channel,
+            "bank_id": context.bank_id,
+        }
+
+    def _apply_balances(
+        self, sender_id: int, receiver_id: int, amount: float, mode: str
+    ) -> None:
+        if mode == "digital":
+            self.db.execute(
+                "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                (amount, sender_id),
+            )
+            self.db.execute(
+                "UPDATE users SET digital_balance = digital_balance + ? WHERE id = ?",
+                (amount, receiver_id),
+            )
+        elif mode == "fiat":
+            self.db.execute(
+                "UPDATE users SET fiat_balance = fiat_balance - ? WHERE id = ?",
+                (amount, sender_id),
+            )
+            self.db.execute(
+                "UPDATE users SET fiat_balance = fiat_balance + ? WHERE id = ?",
+                (amount, receiver_id),
+            )
+        else:
+            raise ValueError("Неизвестный режим перевода")
+
+    # UTXO helpers ---------------------------------------------------------------
+    def _create_utxo(self, owner_id: int, amount: float, created_tx_id: str) -> None:
+        utxo_id = generate_id("ux")
+        self.db.execute(
+            """
+            INSERT INTO utxos(id, owner_id, amount, status, created_tx_id)
+            VALUES (?, ?, ?, 'UNSPENT', ?)
+            """,
+            (utxo_id, owner_id, amount, created_tx_id),
+        )
+
+    def _spend_utxos(self, owner_id: int, amount: float, spending_tx_id: str) -> None:
+        if amount <= 0:
+            return
+        remaining = amount
+        rows = self.db.execute(
+            """
+            SELECT id, amount FROM utxos
+            WHERE owner_id = ? AND status = 'UNSPENT'
+            ORDER BY created_at ASC
+            """,
+            (owner_id,),
+            fetchall=True,
+        )
+        for row in rows or []:
+            if remaining <= 0:
+                break
+            utxo_amount = row["amount"]
+            utxo_id = row["id"]
+            self.db.execute(
+                """
+                UPDATE utxos
+                SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (spending_tx_id, utxo_id),
+            )
+            if utxo_amount > remaining:
+                # вернуть сдачу как новый UTXO
+                change = utxo_amount - remaining
+                self._create_utxo(owner_id, change, spending_tx_id)
+            remaining -= utxo_amount
+        if remaining > 0:
+            # в учебной модели просто фиксируем, что часть суммы покрыта "сверх" (например, эмиссией)
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="UTXO",
+                details=f"Для владельца {owner_id} не хватило UTXO на сумму {remaining:.2f}",
+                context="Блокчейн",
+            )
+
+    # Репликация блоков в локальные БД банков -----------------------------------
+    def _replicate_block_to_banks(self, block, txs: List[Dict]) -> None:
+        banks = self.list_banks()
+        if not banks:
+            return
+        from database import DatabaseManager  # локальный импорт
+
+        # выберем первый банк как "отстающий" для имитации рассинхронизации
+        if self._lagging_bank_id is None:
+            self._lagging_bank_id = banks[0]["id"]
+        for bank in banks:
+            bank_id = bank["id"]
+            # отстающий банк пропускает каждый второй блок
+            if bank_id == self._lagging_bank_id and block.height % 2 == 1:
+                self._log_activity(
+                    actor=bank["name"],
+                    stage="Репликация блока",
+                    details=f"Блок {block.height} временно не применён (отставание узла)",
+                    context="Блокчейн",
+                )
+                continue
+            local_db = DatabaseManager(f"bank_{bank_id}.db")
+            # заголовок блока – если уже есть, пропускаем
+            exists = local_db.execute(
+                "SELECT id FROM blocks WHERE height = ?",
+                (block.height,),
+                fetchone=True,
+            )
+            if not exists:
+                local_db.execute(
+                    """
+                    INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
+                                       signer, nonce, duration_ms, tx_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        block.height,
+                        block.hash,
+                        block.previous_hash,
+                        block.merkle_root,
+                        block.timestamp,
+                        block.signer,
+                        block.nonce,
+                        block.duration_ms,
+                        len(txs),
+                    ),
+                )
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Emission ---------------------------------------------------------
+    def request_emission(self, bank_id: int, amount: float) -> str:
+        if amount <= 0:
+            raise ValueError("Сумма должна быть положительной")
+        req_id = generate_id("em")
+        self.db.execute(
+            """
+            INSERT INTO issuance_requests(id, bank_id, amount, status, requested_at)
+            VALUES (?, ?, ?, 'PENDING', ?)
+            """,
+            (req_id, bank_id, amount, datetime.utcnow().isoformat()),
+        )
+        bank = self._get_bank(bank_id)
+        self._log_emission_flow(bank["name"], amount)
+        return req_id
+
+    def process_emission(self, request_id: str, approve: bool, reason: str = "") -> None:
+        req = self.db.execute(
+            "SELECT * FROM issuance_requests WHERE id = ?", (request_id,), fetchone=True
+        )
+        if not req:
+            raise ValueError("Запрос не найден")
+        status = "APPROVED" if approve else "REJECTED"
+        self.db.execute(
+            """
+            UPDATE issuance_requests
+            SET status = ?, processed_at = CURRENT_TIMESTAMP, reason = ?
+            WHERE id = ?
+            """,
+            (status, reason, request_id),
+        )
+        bank = self._get_bank(req["bank_id"])
+        if approve:
+            self.db.execute(
+                "UPDATE banks SET digital_reserve = digital_reserve + ?, correspondent_balance = correspondent_balance - ? WHERE id = ?",
+                (req["amount"], req["amount"], req["bank_id"]),
+            )
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="Эмиссия подтверждена",
+                details=f"Банк {bank['name']} получил {req['amount']} ЦР",
+                context="Эмиссия",
+            )
+        else:
+            self._log_activity(
+                actor="ЦБ РФ",
+                stage="Эмиссия отклонена",
+                details=f"Запрос банка {bank['name']} отклонен: {reason}",
+                context="Эмиссия",
+            )
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Smart contracts ---------------------------------------------------
+    def create_smart_contract(
+        self,
+        creator_id: int,
+        beneficiary_id: int,
+        bank_id: int,
+        amount: float,
+        description: str,
+    ) -> str:
+        creator = self.get_user(creator_id)
+        beneficiary = self.get_user(beneficiary_id)
+        if creator_id == beneficiary_id:
+            raise ValueError("Создатель и получатель смарт-контракта не могут совпадать")
+        if creator["user_type"] != "INDIVIDUAL":
+            raise ValueError("Смарт-контракт инициирует только физическое лицо")
+        if beneficiary["user_type"] not in {"BUSINESS", "GOVERNMENT"}:
+            raise ValueError("Получатель должен быть ЮЛ или госорган")
+        contract_id = generate_id("sc")
+        # Одноразовый смарт-контракт, исполняется только по явному запросу
+        # next_execution устанавливаем в дату далекого будущего (через 100 лет),
+        # чтобы контракт не исполнялся автоматически, но поле не было NULL
+        far_future = datetime.utcnow() + timedelta(days=36500)  # ~100 лет в будущем
+        self.db.execute(
+            """
+            INSERT INTO smart_contracts(id, creator_id, beneficiary_id, bank_id, amount,
+                                        description, schedule, next_execution,
+                                        status, required_balance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)
+            """,
+            (
+                contract_id,
+                creator_id,
+                beneficiary_id,
+                bank_id,
+                amount,
+                description,
+                "ONCE",
+                far_future.isoformat(),  # Дата в далеком будущем - контракт не будет исполняться автоматически
+                amount,
+            ),
+        )
+        self._log_activity(
+            actor=creator["name"],
+            stage="Регистрация смарт-контракта",
+            details=f"Контракт {contract_id} создан для {beneficiary['name']}",
+            context="Смарт-контракты",
+        )
+        self._log_smart_contract_creation(
+            creator["name"], beneficiary["name"], self._get_bank(bank_id)["name"], contract_id
+        )
+        return contract_id
+
+    def execute_due_contracts(self) -> List[str]:
+        # Исполняем только контракты со статусом SCHEDULED
+        # Контракты с next_execution = NULL исполняются только вручную
+        rows = self.db.execute(
+            """
+            SELECT * FROM smart_contracts
+            WHERE status = 'SCHEDULED'
+            """,
+            fetchall=True,
+        )
+        executed: List[str] = []
+        for contract in rows:
+            try:
+                # Исполняем контракт независимо от next_execution (ручное исполнение)
+                self._execute_contract(contract)
+                executed.append(contract["id"])
+            except ValueError as exc:
+                self._log_activity(
+                    actor="ЦБ РФ",
+                    stage="Смарт-контракт отложен",
+                    details=str(exc),
+                    context="Смарт-контракты",
+                )
+        return executed
+
+    def _execute_contract(self, contract) -> None:
+        creator = self.get_user(contract["creator_id"])
+        if creator["digital_balance"] < contract["amount"]:
+            raise ValueError(
+                f"Недостаточно средств для исполнения контракта {contract['id']}"
+            )
+        context = TransactionContext(
+            sender_id=contract["creator_id"],
+            receiver_id=contract["beneficiary_id"],
+            amount=contract["amount"],
+            tx_type="CONTRACT",
+            channel="C2B" if self.get_user(contract["beneficiary_id"])["user_type"] == "BUSINESS" else "C2G",
+            bank_id=contract["bank_id"],
+            notes=contract["description"],
+        )
+        tx = self._finalize_transaction(context)
+        self._apply_balances(
+            contract["creator_id"],
+            contract["beneficiary_id"],
+            contract["amount"],
+            mode="digital",
+        )
+        self.db.execute(
+            """
+            UPDATE smart_contracts
+            SET status = 'EXECUTED',
+                last_execution = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (contract["id"],),
+        )
+        self._log_activity(
+            actor="ЦБ РФ",
+            stage="Исполнение смарт-контракта",
+            details=f"Контракт {contract['id']} инициировал транзакцию {tx['id']}",
+            context="Смарт-контракты",
+        )
+        bank = self._get_bank(contract["bank_id"])
+        self._log_smart_contract_execution(contract["id"], bank["name"])
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Helper logging flows ---------------------------------------------
+    def _log_activity(self, actor: str, stage: str, details: str, context: str) -> None:
+        logging.info("[%s] %s - %s", stage, actor, details)
+        self.db.execute(
+            """
+            INSERT INTO activity_log(actor, stage, details, context)
+            VALUES (?, ?, ?, ?)
+            """,
+            (actor, stage, details, context),
+        )
+
+    def _log_emission_flow(self, bank_name: str, amount: float) -> None:
+        steps = [
+            "ФО формирует запрос и подписывает его",
+            "ЦБ верифицирует подпись и остаток по корсчету",
+            "ЦБ создает запись UTXO в реестре",
+            "Реестр подтверждает создание",
+            "ЦБ уведомляет ФО об успешной эмиссии",
+            "ФО отражает поступление в локальном хранилище",
+        ]
+        for step in steps:
+            self._log_activity(
+                actor=bank_name,
+                stage="Эмиссия",
+                details=f"{step} на сумму {amount:.2f}",
+                context="Эмиссия",
+            )
+
+    def _log_online_transaction(self, sender: Dict, receiver: Dict, amount: float) -> None:
+        bank = self._get_bank(sender["bank_id"])
+        receiver_bank = self._get_bank(receiver["bank_id"])
+        details = (
+            f"Перевод {amount:.2f} ЦР от {sender['name']} ({bank['name']}) "
+            f"к {receiver['name']} ({receiver_bank['name']})"
+        )
+        steps = [
+            (sender["name"], "Шаг 1. Пользователь инициирует онлайн транзакцию"),
+            (bank["name"], "Шаг 2. Первичная валидация ФО"),
+            (bank["name"], "Шаг 3. Проверка цифровой подписи пользователя"),
+            (bank["name"], "Шаг 4. Валидация формата транзакции"),
+            (bank["name"], "Шаг 5. AML/KYC контроль"),
+            (bank["name"], "Шаг 6. Контроль лимитов операции"),
+            (bank["name"], "Шаг 7. Формирование пакета транзакции"),
+            (bank["name"], "Шаг 8. Подписание пакета цифровой подписью ФО"),
+            ("Менеджер активностей", "Шаг 9. Фиксация времени отправки в ЦБ"),
+            ("ЦБ РФ", "Шаг 10. Верификация подписи ФО"),
+            ("ЦБ РФ", "Шаг 11. Проверка на двойную трату (UTXO)"),
+            ("ЦБ РФ", "Шаг 12. Централизованная валидация транзакции"),
+            ("ЦБ РФ", "Шаг 13. Формирование блока из валидных транзакций"),
+            ("ЦБ РФ", "Шаг 14. Подписание блока приватным ключом"),
+            ("Менеджер активностей", "Шаг 15. Фиксация времени подтверждения"),
+            ("Главный реестр", "Шаг 16. Верификация подписи ЦБ"),
+            ("Главный реестр", "Шаг 17. Проверка целостности блока"),
+            (bank["name"], "Шаг 18. Обновление локального реестра ФО"),
+            (bank["name"], "Шаг 19. Применение транзакции к балансам"),
+            ("Менеджер активностей", "Шаг 20. Фиксация завершения обработки"),
+        ]
+        for actor, stage in steps:
+            self._log_activity(actor=actor, stage=stage, details=details, context="Онлайн транзакции")
+
+    def _log_offline_flow(self, sender: Dict, receiver: Dict, bank_name: str) -> None:
+        details = f"Оффлайн перевод {sender['name']} -> {receiver['name']}"
+        steps = [
+            (sender["name"], "Шаг 1. Пользователь 1 запрашивает активацию оффлайн-кошелька"),
+            (bank_name, "Шаг 2. ФО проверяет лимиты и резервирует средства"),
+            (bank_name, "Шаг 3. ФО отправляет подтверждение резерва Пользователю 2"),
+            ("Распределенный реестр", "Шаг 4. Генерация временных ключей"),
+            ("Распределенный реестр", "Шаг 5. Передача криптопакета Пользователю 2"),
+            (sender["name"], "Шаг 6. Инициатор отправляет запрос на подписание"),
+            (receiver["name"], "Шаг 7. Получатель формирует цифровую подпись"),
+            (receiver["name"], "Шаг 8. Передача платежных данных через NFC/QR"),
+            (sender["name"], "Шаг 9. Сохранение операции в локальном хранилище"),
+            (sender["name"], "Шаг 10. Подтверждение получения для получателя"),
+        ]
+        for actor, stage in steps:
+            self._log_activity(
+                actor=actor,
+                stage=stage,
+                details=details,
+                context="Оффлайн",
+            )
+
+    def _log_block_flow(self, block, context: TransactionContext) -> None:
+        details = f"Блок {block.height} | tx={context.channel} | сумма={context.amount:.2f}"
+        steps = [
+            ("Пользователь", "Фаза 1. Шаг 1. Передача подписанной транзакции в ФО"),
+            ("ФО", "Фаза 1. Шаг 2. Первичная валидация транзакции"),
+            ("ФО", "Фаза 1. Шаг 3. Отправка пакета в ЦБ РФ"),
+            ("ЦБ РФ", "Фаза 2. Шаг 4. Сбор транзакций от нескольких ФО"),
+            ("ЦБ РФ", "Фаза 2. Шаг 5. Формирование блока-кандидата (prev hash, метка времени, nonce, меркле-дерево)"),
+            ("ЦБ РФ", "Фаза 3. Шаг 6. Проверка цифровых подписей транзакций"),
+            ("ЦБ РФ", "Фаза 3. Шаг 7. Контроль отсутствия двойного списания (UTXO)"),
+            ("ЦБ РФ", "Фаза 3. Шаг 8. Проверка форматов данных и лимитов"),
+            ("ЦБ РФ", "Фаза 3. Шаг 9. Проверка регуляторных требований"),
+            ("ЦБ РФ", "Фаза 4. Шаг 10. Подписание блока приватным ключом"),
+            ("ЦБ РФ", "Фаза 4. Шаг 11. Передача подписанного блока в реестр"),
+            ("Главный реестр", "Фаза 4. Шаг 12. Верификация подписи ЦБ"),
+            ("Распределенный реестр", "Фаза 5. Шаг 13. Распространение блока всем участникам"),
+            ("Банки (ФО)", "Фаза 5. Шаг 14. Верификация подписи ЦБ"),
+            ("Банки (ФО)", "Фаза 5. Шаг 15. Проверка целостности блока"),
+            ("Банки (ФО)", "Фаза 5. Шаг 16. Обновление локальных реестров"),
+            ("Банки (ФО)", "Фаза 5. Шаг 17. Применение транзакций к балансам клиентов"),
+            ("Банки (ФО)", "Фаза 6. Шаг 18. Подтверждение успешного обновления"),
+            ("Пользователи", "Фаза 6. Шаг 19. Получение уведомлений о подтверждении"),
+            ("Сборщик метрик", "Фаза 6. Шаг 20. Фиксация времени формирования блока"),
+        ]
+        for actor, stage in steps:
+            self._log_activity(actor=actor, stage=stage, details=details, context="Блокчейн")
+
+    def _log_offline_sync_steps(
+        self, tx_id: str, sender: str, receiver: str, bank_name: str, conflict: bool
+    ) -> None:
+        details = f"Синхронизация оффлайн транзакции {tx_id}: {sender} -> {receiver}"
+        steps = [
+            (sender, "Шаг 11. Пользователь 1 выгружает оффлайн операции в ФО"),
+            (bank_name, "Шаг 12. ФО передает операции в ЦБ РФ"),
+            ("ЦБ РФ", "Шаг 13. Валидация оффлайн-операций"),
+        ]
+        if conflict:
+            steps.extend(
+                [
+                    ("ЦБ РФ", "Шаг 18. Обнаружен конфликт двойной траты, уведомление ФО"),
+                    (bank_name, "Шаг 19. Снятие резерва с основного кошелька"),
+                    (bank_name, "Шаг 20. Фиксация окончательного состояния (отказ)"),
+                    (bank_name, "Шаг 21. Уведомление Пользователя 1 о результате"),
+                ]
+            )
+        else:
+            steps.extend(
+                [
+                    ("ЦБ РФ", "Шаг 14. Включение операции в блок"),
+                    ("ЦБ РФ", "Шаг 15. Обновление балансов участников"),
+                    ("ЦБ РФ", "Шаг 16. Уведомление ФО о синхронизации"),
+                    (bank_name, "Шаг 17. Уведомление пользователей 1 и 2"),
+                    ("ЦБ РФ", "Шаг 18. Проверка повторной авторизации (конфликтов нет)"),
+                    (bank_name, "Шаг 19. Снятие резерва с основного кошелька"),
+                    (bank_name, "Шаг 20. Фиксация окончательного состояния"),
+                    (bank_name, "Шаг 21. Уведомление Пользователя 1 о завершении"),
+                ]
+            )
+        for actor, stage in steps:
+            self._log_activity(actor=actor, stage=stage, details=details, context="Оффлайн")
+
+    def _log_smart_contract_creation(
+        self, creator_name: str, beneficiary_name: str, bank_name: str, contract_id: str
+    ) -> None:
+        details = f"Контракт {contract_id}: {creator_name} -> {beneficiary_name}"
+        steps = [
+            (creator_name, "Этап 1. Шаг 1. Передача кода и условий Банку (ФО)"),
+            (bank_name, "Этап 1. Шаг 2. Регистрация контракта в системе ЦБ РФ"),
+            ("ЦБ РФ", "Этап 1. Шаг 3. Подтверждение создания контракта"),
+            ("ЦБ РФ", "Этап 1. Шаг 4a. Проверка синтаксиса контракта"),
+            ("ЦБ РФ", "Этап 1. Шаг 4b. Анализ безопасности кода"),
+            ("ЦБ РФ", "Этап 1. Шаг 4c. Проверка соответствия ГОСТ Р 57412-2017"),
+            ("ЦБ РФ", "Этап 1. Шаг 5. Передача контракта в распределенный реестр"),
+            ("Распределенный реестр", "Этап 1. Шаг 6. Уведомление о регистрации контракта"),
+            (bank_name, "Этап 1. Шаг 7. Получение подтверждения записи"),
+        ]
+        for actor, stage in steps:
+            self._log_activity(actor=actor, stage=stage, details=details, context="Смарт-контракты")
+
+    def _log_smart_contract_execution(self, contract_id: str, bank_name: str) -> None:
+        details = f"Исполнение контракта {contract_id}"
+        steps = [
+            ("Смарт-контракт", "Этап 2. Шаг 8. Запрос чтения состояния из реестра"),
+            ("Распределенный реестр", "Этап 2. Шаг 9. Возврат актуальных данных состояния"),
+            ("Смарт-контракт", "Этап 2. Шаг 10. Запрос внешних данных"),
+            ("Внешние источники данных", "Этап 2. Шаг 11. Предоставление верифицированных данных"),
+            ("Смарт-контракт", "Этап 2. Шаг 12. Вычисление новых состояний"),
+            ("Смарт-контракт", "Этап 2. Шаг 13. Запрос изменения состояния в реестре"),
+            ("Распределенный реестр", "Этап 2. Шаг 14. Запись нового состояния"),
+            ("Распределенный реестр", "Этап 2. Шаг 15. Подтверждение обновления"),
+            ("Смарт-контракт", "Этап 2. Шаг 16. Уведомление о фиксации изменений"),
+            (bank_name, "Этап 3. Шаг 17. Формирование транзакционных записей"),
+            (bank_name, "Этап 3. Шаг 18. Уведомление ЦБ РФ о готовности операции"),
+            ("ЦБ РФ", "Этап 3. Шаг 19. Подписание и фиксация блока транзакции"),
+            ("Распределенный реестр", "Этап 3. Шаг 20. Подтверждение выполнения транзакции"),
+            ("Распределенный реестр", "Этап 3. Шаг 21. Обновление статуса контракта на 'Исполнен'"),
+            ("Распределенный реестр", "Этап 3. Шаг 22. Уведомление участников о завершении"),
+        ]
+        for actor, stage in steps:
+            self._log_activity(actor=actor, stage=stage, details=details, context="Смарт-контракты")
+
+    def _hash_transaction(
+        self, tx_id: str, sender_id: int, receiver_id: int, amount: float, timestamp: str
+    ) -> str:
+        payload = f"{tx_id}{sender_id}{receiver_id}{amount}{timestamp}"
+        return uuid.uuid5(uuid.NAMESPACE_URL, payload).hex
+
+    def _get_bank(self, bank_id: int) -> Dict:
+        row = self.db.execute(
+            "SELECT * FROM banks WHERE id = ?", (bank_id,), fetchone=True
+        )
+        if not row:
+            raise ValueError("Банк не найден")
+        return dict(row)
+
+    # endregion -------------------------------------------------------------------
+
+    # region --- Data export -------------------------------------------------------
+    def export_registry(self, folder: str = "exports") -> Dict[str, str]:
+        from pathlib import Path
+        from datetime import datetime
+
+        path = Path(folder)
+        path.mkdir(exist_ok=True)
+        log_path = path / f"ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        
+        # Получаем все блоки
+        blocks = self.db.execute(
+            "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
+        )
+        
+        # Получаем все транзакции
+        transactions = self.db.execute(
+            "SELECT * FROM transactions ORDER BY timestamp ASC", fetchall=True
+        )
+        
+        # Создаём словарь транзакций для быстрого доступа
+        tx_dict = {tx["id"]: tx for tx in transactions}
+        
+        # Формируем лог-файл
+        log_lines = []
+        log_lines.append("=" * 80)
+        log_lines.append("ЭКСПОРТ РАСПРЕДЕЛЕННОГО РЕЕСТРА ЦИФРОВОГО РУБЛЯ")
+        log_lines.append(f"Дата экспорта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_lines.append("=" * 80)
+        log_lines.append("")
+        
+        # Записываем блоки
+        log_lines.append("БЛОКИ РЕЕСТРА")
+        log_lines.append("-" * 80)
+        for block in blocks:
+            log_lines.append(f"Блок #{block['height']}")
+            log_lines.append(f"  Хеш: {block['hash']}")
+            log_lines.append(f"  Предыдущий хеш: {block['previous_hash']}")
+            log_lines.append(f"  Меркле-корень: {block['merkle_root']}")
+            log_lines.append(f"  Время создания: {block['timestamp']}")
+            log_lines.append(f"  Подписант: {block['signer']}")
+            log_lines.append(f"  Nonce: {block['nonce']}")
+            log_lines.append(f"  Количество транзакций: {block['tx_count']}")
+            log_lines.append(f"  Время формирования: {block['duration_ms']:.2f} мс")
+            
+            # Получаем транзакции этого блока
+            block_txs = self.db.execute(
+                """
+                SELECT t.* FROM transactions t
+                JOIN block_transactions bt ON bt.tx_id = t.id
+                JOIN blocks b ON b.id = bt.block_id
+                WHERE b.height = ?
+                ORDER BY t.timestamp ASC
+                """,
+                (block['height'],),
+                fetchall=True,
+            )
+            
+            if block_txs:
+                log_lines.append("  Транзакции в блоке:")
+                for tx in block_txs:
+                    sender = self.get_user(tx['sender_id'])
+                    receiver = self.get_user(tx['receiver_id'])
+                    bank = self._get_bank(tx['bank_id'])
+                    log_lines.append(f"    - TX {tx['id']}")
+                    log_lines.append(f"      Отправитель: {sender['name']} (ID: {tx['sender_id']})")
+                    log_lines.append(f"      Получатель: {receiver['name']} (ID: {tx['receiver_id']})")
+                    log_lines.append(f"      Сумма: {tx['amount']:.2f} ЦР")
+                    log_lines.append(f"      Тип: {tx['tx_type']} / {tx['channel']}")
+                    log_lines.append(f"      Банк: {bank['name']}")
+                    log_lines.append(f"      Время: {tx['timestamp']}")
+                    log_lines.append(f"      Хеш транзакции: {tx['hash']}")
+                    # Преобразуем Row в dict для безопасного доступа
+                    tx_dict = dict(tx)
+                    if tx_dict.get('user_sig'):
+                        log_lines.append(f"      Подпись пользователя: {tx_dict['user_sig'][:16]}...")
+                    if tx_dict.get('bank_sig'):
+                        log_lines.append(f"      Подпись банка: {tx_dict['bank_sig'][:16]}...")
+                    if tx_dict.get('cbr_sig'):
+                        log_lines.append(f"      Подпись ЦБ: {tx_dict['cbr_sig'][:16]}...")
+            
+            log_lines.append("")
+        
+        log_lines.append("=" * 80)
+        log_lines.append("СТАТИСТИКА")
+        log_lines.append("-" * 80)
+        log_lines.append(f"Всего блоков: {len(blocks)}")
+        log_lines.append(f"Всего транзакций: {len(transactions)}")
+        
+        # Статистика по типам транзакций
+        tx_types = {}
+        for tx in transactions:
+            tx_type = tx['tx_type']
+            tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
+        
+        log_lines.append("Транзакции по типам:")
+        for tx_type, count in tx_types.items():
+            log_lines.append(f"  {tx_type}: {count}")
+        
+        log_lines.append("")
+        log_lines.append("=" * 80)
+        log_lines.append(f"Конец экспорта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_lines.append("=" * 80)
+        
+        # Записываем в файл
+        log_path.write_text("\n".join(log_lines), encoding="utf-8")
+        
+        return {"ledger": str(log_path)}
+
+    # endregion -------------------------------------------------------------------
+
+
+__all__ = ["DigitalRublePlatform"]
+
