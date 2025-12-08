@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 
+import gost_crypto
 from consensus import MasterchainConsensus
 from platform import DigitalRublePlatform
 
@@ -89,6 +91,81 @@ class DigitalRubleApp(tk.Tk):
         self._build_ledger_tab()
         self._build_activity_tab()
 
+    def _show_steps_window(
+        self,
+        title: str,
+        lines: list[str],
+        export_handler=None,
+        export_plain_handler=None,
+    ) -> None:
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("700x500")
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        text = tk.Text(frame, wrap="word")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        text.insert(tk.END, "\n".join(lines))
+        text.config(state="disabled")
+        if export_handler is not None or export_plain_handler is not None:
+            btn_frame = ttk.Frame(win)
+            btn_frame.pack(fill=tk.X, pady=(8, 0))
+            if export_plain_handler is not None:
+                ttk.Button(
+                    btn_frame,
+                    text="Экспортировать JSON (открытый)",
+                    command=export_plain_handler,
+                ).pack(side=tk.RIGHT, padx=(0, 8))
+            if export_handler is not None:
+                ttk.Button(
+                    btn_frame,
+                    text="Экспортировать JSON (ГОСТ‑шифрование)",
+                    command=export_handler,
+                ).pack(side=tk.RIGHT)
+
+    def _export_encrypted_json(self, default_name: str, payload: dict, bank_id: int | None) -> None:
+        if bank_id is None:
+            messagebox.showerror("Экспорт", "Невозможно определить банк для выбора ключа шифрования.")
+            return
+        try:
+            key = self.platform._get_encryption_key(int(bank_id))
+            raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            iv, cipher = gost_crypto.encrypt_ctr(key, raw)
+            filename = filedialog.asksaveasfilename(
+                title="Сохранить зашифрованный JSON",
+                defaultextension=".enc",
+                initialfile=default_name,
+                filetypes=[("Encrypted files", "*.enc"), ("All files", "*.*")],
+            )
+            if not filename:
+                return
+            with open(filename, "wb") as f:
+                f.write(iv + cipher)
+            messagebox.showinfo("Экспорт", f"Зашифрованный JSON сохранён в файл:\n{filename}")
+        except Exception as exc:
+            messagebox.showerror("Экспорт", f"Ошибка шифрования/экспорта: {exc}")
+
+    def _export_plain_json(self, default_name: str, payload: dict) -> None:
+        try:
+            filename = filedialog.asksaveasfilename(
+                title="Сохранить JSON",
+                defaultextension=".json",
+                initialfile=default_name,
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            )
+            if not filename:
+                return
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("Экспорт", f"JSON сохранён в файл:\n{filename}")
+        except Exception as exc:
+            messagebox.showerror("Экспорт", f"Ошибка экспорта JSON: {exc}")
+
     def _build_management_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Управление")
@@ -149,7 +226,6 @@ class DigitalRubleApp(tk.Tk):
         )
 
     def _build_user_tab(self) -> None:
-        # добавляем прокрутку для всей вкладки
         outer_tab = ttk.Frame(self.notebook)
         self.notebook.add(outer_tab, text="Пользователь")
         outer_tab.columnconfigure(0, weight=1)
@@ -455,6 +531,7 @@ class DigitalRubleApp(tk.Tk):
             "Банк",
         ]
         self.tx_table = self._make_table(tab, columns, stretch=True)
+        self.tx_table.bind("<Double-1>", self._on_tx_row_double_click)
 
     def _build_offline_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -473,6 +550,7 @@ class DigitalRubleApp(tk.Tk):
             "Статус",
         ]
         self.offline_table = self._make_table(table_frame, columns, stretch=True)
+        self.offline_table.bind("<Double-1>", self._on_offline_row_double_click)
         ttk.Button(tab, text="Синхронизировать", command=self._ui_sync_offline).grid(
             row=1, column=0, pady=5
         )
@@ -493,6 +571,7 @@ class DigitalRubleApp(tk.Tk):
             "Статус",
         ]
         self.contract_table = self._make_table(tab, columns, stretch=True)
+        self.contract_table.bind("<Double-1>", self._on_contract_row_double_click)
         ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
             row=1, column=0, pady=5
         )
@@ -546,6 +625,7 @@ class DigitalRubleApp(tk.Tk):
             ["Номер блока", "Хеш блока", "Хеш родителя", "Количество транзакций", "Время создания"],
             stretch=True,
         )
+        self.block_table.bind("<Double-1>", self._on_block_row_double_click)
 
         ttk.Label(tab, text="UTXO (Незатраченные выходы транзакций)", font=("TkDefaultFont", 11, "bold")).grid(
             row=2, column=0, sticky="w", padx=10, pady=(10, 5)
@@ -559,6 +639,7 @@ class DigitalRubleApp(tk.Tk):
             ["ID", "Владелец", "Сумма", "Статус", "Транзакция создания", "Транзакция списания"],
             stretch=True,
         )
+        self.utxo_table.bind("<Double-1>", self._on_utxo_row_double_click)
 
         ttk.Button(tab, text="Экспортировать реестр", command=self._ui_export_registry).grid(
             row=4, column=0, pady=5
@@ -582,8 +663,531 @@ class DigitalRubleApp(tk.Tk):
         self.activity_text = tk.Text(container, yscrollcommand=y_scroll.set)
         self.activity_text.grid(row=0, column=0, sticky="nsew")
         y_scroll.config(command=self.activity_text.yview)
-        # секция ошибок убрана по требованию
         self.errors_table = None
+
+    def _on_tx_row_double_click(self, event) -> None:
+        if not self.tx_table:
+            return
+        item_id = self.tx_table.focus()
+        if not item_id:
+            return
+        values = self.tx_table.item(item_id, "values")
+        if not values:
+            return
+        tx_id = values[0]
+        try:
+            tx = self.platform.get_transaction(tx_id)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
+        sender = self.platform.get_user(tx["sender_id"])
+        receiver = self.platform.get_user(tx["receiver_id"])
+        bank = self.platform._get_bank(tx["bank_id"])
+        payload_str = f"{tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}"
+        block_row = self.platform.db.execute(
+            """
+            SELECT b.height, b.hash
+            FROM blocks b
+            JOIN block_transactions bt ON bt.block_id = b.id
+            WHERE bt.tx_id = ?
+            ORDER BY b.height ASC
+            LIMIT 1
+            """,
+            (tx_id,),
+            fetchone=True,
+        )
+        lines: list[str] = []
+        lines.append(f"Транзакция {tx['id']}")
+        lines.append("")
+        lines.append("1. Подписание пользователем")
+        lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
+        lines.append(f"  Получатель: {receiver['name']} (ID {receiver['id']})")
+        lines.append(f"  Сумма: {tx['amount']:.2f} ЦР")
+        lines.append(f"  Банк (ФО): {bank['name']} (ID {bank['id']})")
+        lines.append(f"  Формируемый payload для подписи: {payload_str}")
+        if tx.get("user_sig"):
+            lines.append(f"  Подпись пользователя user_sig = {tx['user_sig']}")
+        lines.append("")
+        lines.append("2. Подпись банка")
+        if tx.get("bank_sig"):
+            lines.append(f"  Банк формирует подпись bank_sig по тому же payload")
+            lines.append(f"  Подпись банка bank_sig = {tx['bank_sig']}")
+        else:
+            lines.append("  Подпись банка отсутствует (демонстрационный режим).")
+        lines.append("")
+        lines.append("3. Шифрование полезной нагрузки (ГОСТ 34.12‑2018, режим CTR)")
+        enc = tx.get("payload_enc")
+        iv = tx.get("payload_iv")
+        if enc and iv:
+            lines.append(f"  Случайный вектор инициализации IV (16 байт): {iv.hex()}")
+            lines.append("  Полезная нагрузка кодируется в JSON и шифруется блочным шифром «Кузнечик».")
+            lines.append(f"  Длина шифротекста payload_enc: {len(enc)} байт")
+            lines.append(f"  Первые байты payload_enc (hex): {enc.hex()[:64]}...")
+        else:
+            lines.append("  Для этой транзакции зашифрованный payload недоступен (отсутствуют поля payload_enc/payload_iv).")
+        lines.append("")
+        lines.append("4. Хэш транзакции")
+        lines.append("  Хэш формируется как UUIDv5 от канонической строки core:")
+        lines.append("    core = tx_id || sender_id || receiver_id || amount || timestamp")
+        lines.append(f"  Итоговое значение хэша (tx.hash): {tx['hash']}")
+        lines.append("")
+        lines.append("5. Сохранение транзакции")
+        lines.append("  Запись добавляется в таблицу transactions с полями:")
+        lines.append("    id, sender_id, receiver_id, amount, tx_type, channel, status, timestamp,")
+        lines.append("    bank_id, hash, offline_flag, notes, user_sig, bank_sig, cbr_sig, payload_enc, payload_iv.")
+        lines.append("")
+        lines.append("6. Включение транзакции в блок распределённого реестра")
+        if block_row:
+            lines.append(
+                f"  Транзакция включена в блок #{block_row['height']} с хэшем {block_row['hash']} "
+                "через запись в таблице block_transactions (связка block_id ↔ tx_id)."
+            )
+        else:
+            lines.append(
+                "  На данный момент транзакция ещё не привязана к конкретному блоку (отсутствует запись в block_transactions)."
+            )
+        export_payload = {
+            "type": "transaction",
+            "id": tx["id"],
+            "sender_id": tx["sender_id"],
+            "receiver_id": tx["receiver_id"],
+            "amount": tx["amount"],
+            "tx_type": tx["tx_type"],
+            "channel": tx["channel"],
+            "bank_id": tx["bank_id"],
+            "timestamp": tx["timestamp"],
+            "hash": tx["hash"],
+        }
+        self._show_steps_window(
+            "Этапы обработки транзакции",
+            lines,
+            export_handler=lambda: self._export_encrypted_json(
+                f"transaction_{tx_id}.enc", export_payload, tx["bank_id"]
+            ),
+            export_plain_handler=lambda: self._export_plain_json(
+                f"transaction_{tx_id}.json", export_payload
+            ),
+        )
+
+    def _on_offline_row_double_click(self, event) -> None:
+        if not self.offline_table:
+            return
+        item_id = self.offline_table.focus()
+        if not item_id:
+            return
+        values = self.offline_table.item(item_id, "values")
+        if not values:
+            return
+        tx_id = values[0]
+        try:
+            tx = self.platform.get_offline_transaction(tx_id)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
+        sender = self.platform.get_user(tx["sender_id"])
+        receiver = self.platform.get_user(tx["receiver_id"])
+        bank = self.platform._get_bank(tx["bank_id"])
+        block_row = self.platform.db.execute(
+            """
+            SELECT b.height, b.hash
+            FROM blocks b
+            JOIN block_transactions bt ON bt.block_id = b.id
+            WHERE bt.tx_id = ?
+            ORDER BY b.height ASC
+            LIMIT 1
+            """,
+            (tx_id,),
+            fetchone=True,
+        )
+        utxos_in = self.platform.db.execute(
+            "SELECT * FROM utxos WHERE spent_tx_id = ? ORDER BY created_at ASC",
+            (tx_id,),
+            fetchall=True,
+        ) or []
+        utxos_out = self.platform.db.execute(
+            "SELECT * FROM utxos WHERE created_tx_id = ? ORDER BY created_at ASC",
+            (tx_id,),
+            fetchall=True,
+        ) or []
+        lines: list[str] = []
+        lines.append(f"Оффлайн-транзакция {tx_id}")
+        lines.append("")
+        lines.append("1. Подготовка оффлайн‑кошелька и UTXO")
+        lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
+        lines.append(f"  Статус оффлайн‑кошелька: {self._translate_wallet_status(sender['offline_status'])}")
+        lines.append(f"  Активация: {sender.get('offline_activated_at') or '-'}")
+        lines.append(f"  Окончание: {sender.get('offline_expires_at') or '-'}")
+        lines.append("")
+        lines.append("2. Формирование оффлайн‑транзакции")
+        lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
+        lines.append(f"  Получатель: {receiver['name']} (ID {receiver['id']})")
+        lines.append(f"  Банк (ФО): {bank['name']}")
+        lines.append(f"  Сумма: {tx['amount']:.2f} ЦР")
+        lines.append("")
+        lines.append("3. Входы (список UTXO)")
+        total_in = 0.0
+        if utxos_in:
+            for u in utxos_in:
+                lines.append(f"  UTXO {u['id']} на сумму {u['amount']:.2f} ЦР")
+                total_in += u["amount"]
+        else:
+            lines.append("  Для этой транзакции не найдено списанных UTXO (возможна старая модель).")
+        lines.append(f"  Итого по входам: {total_in:.2f} ЦР")
+        lines.append("")
+        lines.append("4. Выходы (созданные UTXO)")
+        if utxos_out:
+            for u in utxos_out:
+                lines.append(f"  UTXO {u['id']} на сумму {u['amount']:.2f} ЦР (owner_id={u['owner_id']})")
+        else:
+            lines.append("  Новые UTXO по этой транзакции ещё не созданы (ожидание синхронизации).")
+        lines.append("")
+        lines.append("5. Криптография оффлайн‑транзакции")
+        enc = tx.get("payload_enc")
+        iv = tx.get("payload_iv")
+        if enc and iv:
+            lines.append("  На стороне отправителя формируется offline_tx_core:")
+            lines.append("    core = {id, sender_id, receiver_id, amount, bank_id, offline_flag, timestamp, подписи}.")
+            lines.append("  Эта структура сериализуется в JSON и шифруется ГОСТ 34.12‑2018 (Кузнечик) в режиме CTR:")
+            lines.append(f"    • IV (вектор инициализации, 16 байт) для счётчика CTR: {iv.hex()}")
+            lines.append("    • для каждого блока вычисляется keystream_i = E_K(IV + i), затем plaintext_i XOR keystream_i → ciphertext_i;")
+            lines.append("    • результат сохраняется в поле payload_enc, IV — в поле payload_iv.")
+            lines.append(f"    • длина payload_enc: {len(enc)} байт; первые байты (hex): {enc.hex()[:64]}...")
+        else:
+            lines.append("  Криптографическое представление оффлайн‑записи недоступно (отсутствуют поля payload_enc/payload_iv).")
+        lines.append("")
+        lines.append("6. Синхронизация с ЦБ и включение в блок")
+        lines.append(f"  Статус записи в offline_transactions: {tx.get('offline_status', '-')}")
+        lines.append(f"  Время синхронизации (synced_at): {tx.get('synced_at') or '-'}")
+        if tx.get("conflict_reason"):
+            lines.append(f"  Причина конфликта (conflict_reason): {tx['conflict_reason']}")
+        if block_row:
+            lines.append(
+                f"  В таблице transactions существует подтверждённая запись по этой оффлайн‑операции "
+                f"и связь с блоком #{block_row['height']} (hash={block_row['hash']}) через block_transactions."
+            )
+        else:
+            lines.append(
+                "  Для данной оффлайн‑записи ещё не найден связанный блок в главном реестре (нет записи в block_transactions)."
+            )
+        export_payload = {
+            "type": "offline_transaction",
+            "id": tx["id"],
+            "sender_id": tx["sender_id"],
+            "receiver_id": tx["receiver_id"],
+            "amount": tx["amount"],
+            "bank_id": tx["bank_id"],
+            "timestamp": tx["timestamp"],
+            "offline_status": tx.get("offline_status"),
+            "synced_at": tx.get("synced_at"),
+            "conflict_reason": tx.get("conflict_reason"),
+        }
+        self._show_steps_window(
+            "Этапы оффлайн‑транзакции",
+            lines,
+            export_handler=lambda: self._export_encrypted_json(
+                f"offline_tx_{tx_id}.enc", export_payload, tx["bank_id"]
+            ),
+            export_plain_handler=lambda: self._export_plain_json(
+                f"offline_tx_{tx_id}.json", export_payload
+            ),
+        )
+
+    def _on_contract_row_double_click(self, event) -> None:
+        if not self.contract_table:
+            return
+        item_id = self.contract_table.focus()
+        if not item_id:
+            return
+        values = self.contract_table.item(item_id, "values")
+        if not values:
+            return
+        contract_id = values[0]
+        try:
+            sc = self.platform.get_smart_contract(contract_id)
+        except Exception as exc:
+            messagebox.showerror("Ошибка", str(exc))
+            return
+        creator = self.platform.get_user(sc["creator_id"])
+        beneficiary = self.platform.get_user(sc["beneficiary_id"])
+        bank = self.platform._get_bank(sc["bank_id"])
+        lines: list[str] = []
+        lines.append(f"Смарт‑контракт {contract_id}")
+        lines.append("")
+        lines.append("1. Создание смарт‑контракта (contract_core)")
+        lines.append(f"  Плательщик: {creator['name']} (ID {creator['id']})")
+        lines.append(f"  Получатель: {beneficiary['name']} (ID {beneficiary['id']})")
+        lines.append(f"  Банк (ФО): {bank['name']}")
+        lines.append(f"  Сумма: {sc['amount']:.2f} ЦР")
+        lines.append(f"  Описание: {sc['description']}")
+        lines.append(f"  График (schedule): {sc['schedule']}")
+        lines.append(f"  Следующее исполнение (next_execution): {sc['next_execution']}")
+        lines.append("")
+        lines.append("2. Подписание contract_core")
+        lines.append("  Формируется детерминированная строка/JSON contract_core (id, creator_id, beneficiary_id, bank_id, amount, schedule, next_execution).")
+        lines.append("  Создатель вычисляет хэш от contract_core и подписывает его своим приватным ключом (sig_creator).")
+        lines.append("  При необходимости может добавляться подпись банка и/или ЦБ по тому же представлению данных.")
+        lines.append("")
+        lines.append("3. Шифрование и сохранение (ГОСТ 34.12‑2018, режим CTR)")
+        sc_enc = sc.get("payload_enc")
+        sc_iv = sc.get("payload_iv")
+        if sc_enc and sc_iv:
+            lines.append(f"  Вектор инициализации IV (16 байт): {sc_iv.hex()}")
+            lines.append("  Ядро контракта сериализуется в JSON и шифруется блочным шифром «Кузнечик» в режиме CTR.")
+            lines.append(f"  Длина шифротекста payload_enc: {len(sc_enc)} байт")
+            lines.append(f"  Первые байты payload_enc (hex): {sc_enc.hex()[:64]}...")
+        else:
+            lines.append("  Зашифрованный payload смарт‑контракта недоступен (отсутствуют поля payload_enc/payload_iv).")
+        lines.append("")
+        lines.append("4. Исполнение смарт‑контракта (техническая последовательность)")
+        lines.append("  • ядро контракта расшифровывается из payload_enc/payload_iv и восстанавливается contract_core;")
+        lines.append("  • проверяется достаточность digital_balance плательщика и статус/расписание контракта;")
+        lines.append("  • по параметрам contract_core формируется транзакция типа CONTRACT и пропускается через _finalize_transaction;")
+        lines.append("  • в этом процессе создаётся запись в transactions, формируется блок, считается Merkle‑корень и подпись ЦБ,")
+        lines.append("    а статус контракта обновляется на EXECUTED или FAILED с записью в failed_transactions при ошибках.")
+        last_tx_id = sc.get("last_tx_id")
+        if last_tx_id:
+            block_row = self.platform.db.execute(
+                """
+                SELECT b.height, b.hash
+                FROM blocks b
+                JOIN block_transactions bt ON bt.block_id = b.id
+                WHERE bt.tx_id = ?
+                ORDER BY b.height ASC
+                LIMIT 1
+                """,
+                (last_tx_id,),
+                fetchone=True,
+            )
+            lines.append("")
+            lines.append("5. Связь смарт‑контракта с блоками реестра")
+            lines.append(f"  Последняя транзакция исполнения (tx_id): {last_tx_id}")
+            if block_row:
+                lines.append(
+                    f"  Эта транзакция включена в блок #{block_row['height']} с хэшем {block_row['hash']} "
+                    "через таблицу block_transactions."
+                )
+            else:
+                lines.append("  Для данной транзакции исполнения ещё не найден связанный блок в главном реестре.")
+        export_payload = {
+            "type": "smart_contract",
+            "id": contract_id,
+            "creator_id": sc["creator_id"],
+            "beneficiary_id": sc["beneficiary_id"],
+            "bank_id": sc["bank_id"],
+            "amount": sc["amount"],
+            "description": sc["description"],
+            "schedule": sc["schedule"],
+            "next_execution": sc["next_execution"],
+            "last_tx_id": sc.get("last_tx_id"),
+        }
+        self._show_steps_window(
+            "Этапы работы смарт‑контракта",
+            lines,
+            export_handler=lambda: self._export_encrypted_json(
+                f"contract_{contract_id}.enc", export_payload, sc["bank_id"]
+            ),
+            export_plain_handler=lambda: self._export_plain_json(
+                f"contract_{contract_id}.json", export_payload
+            ),
+        )
+
+    def _on_block_row_double_click(self, event) -> None:
+        if not self.block_table:
+            return
+        item_id = self.block_table.focus()
+        if not item_id:
+            return
+        values = self.block_table.item(item_id, "values")
+        if not values:
+            return
+        height = values[0]
+        block = self.platform.db.execute(
+            "SELECT * FROM blocks WHERE height = ?",
+            (height,),
+            fetchone=True,
+        )
+        if not block:
+            messagebox.showerror("Ошибка", "Блок не найден")
+            return
+        block = dict(block)
+        block_hash = block["hash"]
+        tx_rows = self.platform.db.execute(
+            """
+            SELECT t.* FROM transactions t
+            JOIN block_transactions bt ON bt.tx_id = t.id
+            JOIN blocks b ON b.id = bt.block_id
+            WHERE b.height = ?
+            ORDER BY t.timestamp ASC
+            """,
+            (height,),
+            fetchall=True,
+        ) or []
+        txs = [self.platform._decrypt_transaction_row(dict(r)) for r in tx_rows]
+        events = self.platform.consensus.get_recent_events(limit=200)
+        events_for_block = [e for e in events if e.block_hash == block_hash]
+        lines: list[str] = []
+        lines.append(f"Блок #{block['height']} ({block_hash})")
+        lines.append("")
+        lines.append("1. Подбор транзакций в блок")
+        lines.append(f"  Количество транзакций: {len(txs)}")
+        for t in txs:
+            lines.append(
+                f"    • TX {t['id']} | тип={t['tx_type']} | сумма={t['amount']:.2f} | банк_id={t['bank_id']}"
+            )
+        lines.append("")
+        lines.append("2. Структура блока и Merkle‑дерево")
+        lines.append(f"  previous_hash: {block['previous_hash']}")
+        lines.append(f"  merkle_root: {block['merkle_root']}")
+        lines.append(f"  timestamp: {block['timestamp']}")
+        lines.append(f"  nonce: {block['nonce']}")
+        if txs:
+            lines.append("  Построение Merkle‑дерева (формально):")
+            lines.append("    • обозначим через h_i = H(tx_hash_i) хэш i‑й транзакции блока;")
+            lines.append("    • на каждом уровне k берём пары (h_{k,2j-1}, h_{k,2j}) и считаем h_{k+1,j} = H(h_{k,2j-1} || h_{k,2j});")
+            lines.append("    • при нечётном числе элементов последний хэш дублируется: h_{k,2m} = h_{k,2m-1};")
+            lines.append("    • корневой хэш merkle_root = h_{L,1}, где L — номер последнего уровня дерева.")
+        else:
+            lines.append("  Для пустого блока merkle_root может быть фиксированным значением или хэшем пустого списка.")
+        lines.append("")
+        lines.append("3. Подпись блока ЦБ и сохранение")
+        lines.append(f"  Подписант (signer): {block['signer']}")
+        lines.append("  Сигнатура блока cbr_sig хранится в связанных записях transactions и вычисляется как подпись хэша блока.")
+        lines.append("  Сам блок сохраняется в таблице blocks, а связи блок ↔ транзакции — в таблице block_transactions (поля block_id, tx_id).")
+        lines.append("")
+        lines.append("4. Консенсус (RAFT) и распределённое голосование")
+        lines.append("  В модели лидер консенсуса фиксирован и всегда соответствует Центральному банку РФ (ЦБ РФ).")
+        lines.append("  В таблице consensus_events для каждого шага хранятся: actor (узел), state, event, block_hash, created_at.")
+        lines.append("  Этапы для одной записи блока:")
+        lines.append("    1) Запрос на подтверждение: ЦБ формирует предложение AppendEntries и рассылает его ФО;")
+        lines.append("    2) Голосование: ФО возвращают ответы (VOTE_GRANTED / REPLICATION) о согласии применить запись;")
+        lines.append("    3) Рассылка результата: ЦБ фиксирует достижение кворума и уведомляет узлы о принятии записи;")
+        lines.append("    4) Сохранение: запись помечается как COMMITTED и ENTRY_APPLIED в каждом узле.")
+        if events_for_block:
+            for e in events_for_block:
+                lines.append(
+                    f"  [{e.created_at}] {e.actor}: {self._translate_consensus_state(e.state)} — {e.event}"
+                )
+        else:
+            lines.append("  Для этого блока ещё нет событий в таблице consensus_events.")
+        lines.append("")
+        lines.append("5. Репликация в локальные реестры ФО")
+        lines.append("  Центральный банк РФ (главный реестр): блок присутствует.")
+        lines.append("  Блок также хранится во всех ФО, через которые прошли входящие в него транзакции (перечислены ниже).")
+        for bank in self.platform.list_banks():
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
+            lb = bank_db.execute(
+                "SELECT * FROM blocks WHERE height = ?",
+                (height,),
+                fetchone=True,
+            )
+            if lb:
+                lines.append(f"  Блок присутствует в узле {bank['name']} (bank_{bank['id']}.db).")
+        export_payload = {
+            "type": "block",
+            "height": block["height"],
+            "hash": block["hash"],
+            "previous_hash": block["previous_hash"],
+            "merkle_root": block["merkle_root"],
+            "timestamp": block["timestamp"],
+            "signer": block["signer"],
+            "tx_ids": [t["id"] for t in txs],
+        }
+        self._show_steps_window(
+            "Этапы формирования и репликации блока",
+            lines,
+            export_handler=lambda: self._export_encrypted_json(
+                f"block_{block['height']}.enc",
+                export_payload,
+                None,
+            ),
+            export_plain_handler=lambda: self._export_plain_json(
+                f"block_{block['height']}.json",
+                export_payload,
+            ),
+        )
+
+    def _on_utxo_row_double_click(self, event) -> None:
+        if not self.utxo_table:
+            return
+        item_id = self.utxo_table.focus()
+        if not item_id:
+            return
+        values = self.utxo_table.item(item_id, "values")
+        if not values:
+            return
+        utxo_id = values[0]
+        row = self.platform.db.execute(
+            "SELECT * FROM utxos WHERE id = ?",
+            (utxo_id,),
+            fetchone=True,
+        )
+        if not row:
+            messagebox.showerror("Ошибка", "UTXO не найдено")
+            return
+        u = dict(row)
+        try:
+            owner = self.platform.get_user(u["owner_id"])
+            owner_name = owner["name"]
+        except Exception:
+            owner_name = f"ID {u['owner_id']}"
+        lines: list[str] = []
+        lines.append(f"UTXO {u['id']}")
+        lines.append("")
+        lines.append("1. Формирование UTXO")
+        lines.append(f"  Владелец: {owner_name} (ID {u['owner_id']})")
+        lines.append(f"  Сумма: {u['amount']:.2f} ЦР")
+        lines.append(f"  Статус: {self._translate_status(u['status'])}")
+        created_tx = None
+        if u.get("created_tx_id"):
+            created_tx = self.platform.db.execute(
+                "SELECT id, tx_type, channel, timestamp FROM transactions WHERE id = ?",
+                (u["created_tx_id"],),
+                fetchone=True,
+            )
+        if created_tx:
+            created_tx = dict(created_tx)
+            lines.append(
+                f"  Создано транзакцией: {created_tx['id']} "
+                f"(тип={created_tx['tx_type']}, канал={created_tx['channel']}, время={created_tx['timestamp']})"
+            )
+        else:
+            lines.append(f"  Создано транзакцией: {u.get('created_tx_id') or '-'}")
+        lines.append("")
+        lines.append("2. Дальнейшее использование")
+        if u.get("spent_tx_id"):
+            lines.append(f"  Потрачено транзакцией: {u['spent_tx_id']}")
+        else:
+            lines.append("  UTXO ещё не было потрачено (UNSPENT).")
+        lines.append("")
+        lines.append("3. Техническая роль UTXO в модели")
+        lines.append("  Запись UTXO хранит (id, owner_id, amount, status, created_tx_id, spent_tx_id, created_at, spent_at).")
+        lines.append("  При формировании транзакции набор UTXO выбирается как вход (input set), помечается статусом SPENT,")
+        lines.append("  а при необходимости создаётся одно новое UTXO на сдачу. При оффлайн‑сценариях именно по полям")
+        lines.append("  owner_id, status и spent_tx_id моделируется ошибка двойной траты и проверяется достаточность средств.")
+        export_payload = {
+            "type": "utxo",
+            "id": u["id"],
+            "owner_id": u["owner_id"],
+            "amount": u["amount"],
+            "status": u["status"],
+            "created_tx_id": u["created_tx_id"],
+            "spent_tx_id": u.get("spent_tx_id"),
+        }
+        bank_id = owner["bank_id"] if "bank_id" in owner else None
+        self._show_steps_window(
+            "Этапы формирования и использования UTXO",
+            lines,
+            export_handler=lambda: self._export_encrypted_json(
+                f"utxo_{u['id']}.enc",
+                export_payload,
+                bank_id,
+            ),
+            export_plain_handler=lambda: self._export_plain_json(
+                f"utxo_{u['id']}.json",
+                export_payload,
+            ),
+        )
 
 
     def _translate_tx_type(self, tx_type: str) -> str:
@@ -990,10 +1594,10 @@ class DigitalRubleApp(tk.Tk):
         if self.cbr_log:
             self.cbr_log.delete("1.0", tk.END)
             for entry in self.platform.get_activity_log(limit=200):
-                    self.cbr_log.insert(
-                        tk.END,
+                self.cbr_log.insert(
+                    tk.END,
                     f"{entry['created_at']} | {entry['context']} | {entry['stage']} | {entry['details']}\n",
-                    )
+                )
 
     def _refresh_consensus_canvas(self) -> None:
         canvas = self.consensus_canvas
@@ -1021,7 +1625,6 @@ class DigitalRubleApp(tk.Tk):
         leader_x = width // 2
         leader_y = 120
 
-        # визуальное выделение лидера без использования состояния из stats
         if self._consensus_active_state in {"LEADER", "LEADER_APPEND"}:
             leader_fill = "#10b981"
         elif self._consensus_active_state in {"CANDIDATE", "ELECTION_START"}:
@@ -1077,12 +1680,16 @@ class DigitalRubleApp(tk.Tk):
             votes = self._consensus_votes
             replications = self._consensus_replications or 0
             total_banks = self._consensus_total_banks
-            canvas.create_text(
-                width // 2,
-                50,
-                text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
-                fill="#4b5563",
-            )
+        else:
+            votes = 0
+            replications = 0
+            total_banks = max(len(bank_nodes), 1)
+        canvas.create_text(
+            width // 2,
+            50,
+            text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
+            fill="#4b5563",
+        )
         if subtitle:
             canvas.create_text(
                 width // 2,
@@ -1229,7 +1836,6 @@ class DigitalRubleApp(tk.Tk):
             self._ledger_active_height = self._ledger_last_rows[idx]["height"]
         else:
             self._ledger_active_height = None
-        # динамические голоса/репликации на основе уже просмотренных событий
         seen = self._consensus_anim_events[: self._consensus_anim_index + 1]
         self._consensus_votes = sum(1 for e in seen if e["state"] == "VOTE_GRANTED")
         self._consensus_replications = sum(1 for e in seen if e["state"] == "REPLICATION")

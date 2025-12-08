@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import hashlib
+import secrets
+import json
 from consensus import MasterchainConsensus
 from database import DatabaseManager
 from ledger import DistributedLedger
-import hashlib
-import secrets
+import gost_crypto
 
 logging.basicConfig(
     filename="digital_ruble.log",
@@ -128,6 +130,7 @@ class DigitalRublePlatform:
         self._lagging_bank_id: Optional[int] = None
         self._offline_tx_counter: int = 0
         self._offline_sync_counter: int = 0
+        self._encryption_key_cache: Dict[int, bytes] = {}
 
     def _cleanup_transient(self) -> None:
         """Удаляет временные ошибки при запуске, чтобы не показывать старые записи."""
@@ -172,6 +175,8 @@ class DigitalRublePlatform:
                 pass
         finally:
             self.db.execute("PRAGMA foreign_keys = ON")
+        self._encryption_key_cache.clear()
+        self.db.execute("DELETE FROM encryption_keys")
         
         from pathlib import Path
 
@@ -180,6 +185,7 @@ class DigitalRublePlatform:
                 path.unlink()
             except OSError:
                 continue
+        self._encryption_key_cache.clear()
 
     def create_banks(self, count: int) -> List[int]:
         bank_ids: List[int] = []
@@ -200,6 +206,7 @@ class DigitalRublePlatform:
             )
             bank_id = row["id"]
             bank_ids.append(bank_id)
+            self._ensure_encryption_key(bank_id)
             from database import DatabaseManager
 
             DatabaseManager(f"bank_{bank_id}.db")
@@ -295,7 +302,23 @@ class DigitalRublePlatform:
             params.append(bank_id)
         query += " ORDER BY timestamp DESC"
         rows = self.db.execute(query, tuple(params) if params else None, fetchall=True)
-        return [dict(row) for row in rows] if rows else []
+        result: List[Dict] = []
+        for row in rows or []:
+            tx = dict(row)
+            tx = self._decrypt_transaction_row(tx)
+            result.append(tx)
+        return result
+
+    def get_transaction(self, tx_id: str) -> Dict:
+        row = self.db.execute(
+            "SELECT * FROM transactions WHERE id = ?",
+            (tx_id,),
+            fetchone=True,
+        )
+        if not row:
+            raise ValueError("Транзакция не найдена")
+        tx = self._decrypt_transaction_row(dict(row))
+        return tx
 
     def get_offline_transactions(self) -> List[Dict]:
         rows = self.db.execute(
@@ -307,7 +330,28 @@ class DigitalRublePlatform:
             """,
             fetchall=True,
         )
-        return [dict(row) for row in rows] if rows else []
+        result: List[Dict] = []
+        for row in rows or []:
+            tx = dict(row)
+            tx = self._decrypt_transaction_row(tx)
+            result.append(tx)
+        return result
+
+    def get_offline_transaction(self, tx_id: str) -> Dict:
+        row = self.db.execute(
+            """
+            SELECT t.*, o.status as offline_status, o.synced_at, o.conflict_reason
+            FROM offline_transactions o
+            JOIN transactions t ON t.id = o.tx_id
+            WHERE t.id = ?
+            """,
+            (tx_id,),
+            fetchone=True,
+        )
+        if not row:
+            raise ValueError("Оффлайн-транзакция не найдена")
+        tx = self._decrypt_transaction_row(dict(row))
+        return tx
 
     def get_smart_contracts(self) -> List[Dict]:
         rows = self.db.execute(
@@ -315,6 +359,74 @@ class DigitalRublePlatform:
             fetchall=True,
         )
         return [dict(row) for row in rows] if rows else []
+
+    def _ensure_contract_encrypted(self, sc: Dict) -> Dict:
+        enc = sc.get("payload_enc")
+        iv = sc.get("payload_iv")
+        bank_id = sc.get("bank_id")
+        if enc and iv and bank_id is not None:
+            return sc
+        if bank_id is None or "id" not in sc:
+            return sc
+        core = {
+            "id": sc["id"],
+            "creator_id": sc.get("creator_id"),
+            "beneficiary_id": sc.get("beneficiary_id"),
+            "bank_id": bank_id,
+            "amount": sc.get("amount"),
+            "description": sc.get("description") or "",
+            "schedule": sc.get("schedule") or "ONCE",
+            "next_execution": sc.get("next_execution")
+            or datetime.utcnow().isoformat(),
+        }
+        try:
+            payload_bytes = json.dumps(
+                core, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            key = self._get_encryption_key(int(bank_id))
+            new_iv, new_cipher = gost_crypto.encrypt_ctr(key, payload_bytes)
+            self.db.execute(
+                "UPDATE smart_contracts SET payload_enc = ?, payload_iv = ? WHERE id = ?",
+                (new_cipher, new_iv, sc["id"]),
+            )
+            sc["payload_enc"] = new_cipher
+            sc["payload_iv"] = new_iv
+        except Exception:
+            return sc
+        return sc
+
+    def _decrypt_contract_row(self, sc: Dict) -> Dict:
+        sc = self._ensure_contract_encrypted(sc)
+        enc = sc.get("payload_enc")
+        iv = sc.get("payload_iv")
+        bank_id = sc.get("bank_id")
+        if not enc or not iv or bank_id is None:
+            return sc
+        try:
+            key = self._get_encryption_key(int(bank_id))
+            payload_bytes = gost_crypto.decrypt_ctr(key, iv, enc)
+            core = json.loads(payload_bytes.decode("utf-8"))
+        except Exception:
+            return sc
+        sc["creator_id"] = core.get("creator_id", sc.get("creator_id"))
+        sc["beneficiary_id"] = core.get("beneficiary_id", sc.get("beneficiary_id"))
+        sc["bank_id"] = core.get("bank_id", sc.get("bank_id"))
+        sc["amount"] = core.get("amount", sc.get("amount"))
+        sc["description"] = core.get("description", sc.get("description"))
+        sc["schedule"] = core.get("schedule", sc.get("schedule"))
+        sc["next_execution"] = core.get("next_execution", sc.get("next_execution"))
+        return sc
+
+    def get_smart_contract(self, contract_id: str) -> Dict:
+        row = self.db.execute(
+            "SELECT * FROM smart_contracts WHERE id = ?",
+            (contract_id,),
+            fetchone=True,
+        )
+        if not row:
+            raise ValueError("Смарт-контракт не найден")
+        sc = self._decrypt_contract_row(dict(row))
+        return sc
 
     def get_activity_log(self, limit: int = 200) -> List[Dict]:
         rows = self.db.execute(
@@ -355,6 +467,97 @@ class DigitalRublePlatform:
             fetchall=True,
         )
         return [dict(row) for row in rows] if rows else []
+
+    def _ensure_encryption_key(self, bank_id: int) -> bytes:
+        if bank_id in self._encryption_key_cache:
+            return self._encryption_key_cache[bank_id]
+        row = self.db.execute(
+            "SELECT key FROM encryption_keys WHERE owner_type = ? AND owner_id = ?",
+            ("BANK", bank_id),
+            fetchone=True,
+        )
+        if row and row["key"]:
+            key = row["key"]
+        else:
+            key = gost_crypto.generate_key()
+            self.db.execute(
+                """
+                INSERT OR REPLACE INTO encryption_keys(owner_type, owner_id, key)
+                VALUES (?, ?, ?)
+                """,
+                ("BANK", bank_id, key),
+            )
+        self._encryption_key_cache[bank_id] = key
+        return key
+
+    def _get_encryption_key(self, bank_id: int) -> bytes:
+        return self._ensure_encryption_key(bank_id)
+
+    def _ensure_transaction_encrypted(self, tx: Dict) -> Dict:
+        enc = tx.get("payload_enc")
+        iv = tx.get("payload_iv")
+        bank_id = tx.get("bank_id")
+        if enc and iv and bank_id is not None:
+            return tx
+        if bank_id is None or "id" not in tx:
+            return tx
+        try:
+            key = self._get_encryption_key(int(bank_id))
+            payload_obj = {
+                "tx_id": tx["id"],
+                "sender_id": tx.get("sender_id"),
+                "receiver_id": tx.get("receiver_id"),
+                "amount": tx.get("amount"),
+                "tx_type": tx.get("tx_type"),
+                "channel": tx.get("channel"),
+                "bank_id": bank_id,
+                "offline_flag": tx.get("offline_flag", 0),
+                "notes": tx.get("notes") or "",
+                "timestamp": tx.get("timestamp"),
+                "user_sig": tx.get("user_sig"),
+                "bank_sig": tx.get("bank_sig"),
+            }
+            payload_bytes = json.dumps(
+                payload_obj, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            new_iv, new_cipher = gost_crypto.encrypt_ctr(key, payload_bytes)
+            self.db.execute(
+                "UPDATE transactions SET payload_enc = ?, payload_iv = ? WHERE id = ?",
+                (new_cipher, new_iv, tx["id"]),
+            )
+            tx["payload_enc"] = new_cipher
+            tx["payload_iv"] = new_iv
+        except Exception:
+            return tx
+        return tx
+
+    def _decrypt_transaction_row(self, tx: Dict) -> Dict:
+        tx = self._ensure_transaction_encrypted(tx)
+        enc = tx.get("payload_enc")
+        iv = tx.get("payload_iv")
+        bank_id = tx.get("bank_id")
+        if not enc or not iv or bank_id is None:
+            return tx
+        try:
+            key = self._get_encryption_key(int(bank_id))
+            payload_bytes = gost_crypto.decrypt_ctr(key, iv, enc)
+            payload = json.loads(payload_bytes.decode("utf-8"))
+        except Exception:
+            return tx
+        tx["sender_id"] = payload.get("sender_id")
+        tx["receiver_id"] = payload.get("receiver_id")
+        tx["amount"] = payload.get("amount")
+        tx["tx_type"] = payload.get("tx_type", tx.get("tx_type"))
+        tx["channel"] = payload.get("channel", tx.get("channel"))
+        tx["bank_id"] = payload.get("bank_id", bank_id)
+        tx["offline_flag"] = payload.get("offline_flag", tx.get("offline_flag"))
+        if "notes" in payload:
+            tx["notes"] = payload["notes"]
+        if "user_sig" in payload:
+            tx["user_sig"] = payload["user_sig"]
+        if "bank_sig" in payload:
+            tx["bank_sig"] = payload["bank_sig"]
+        return tx
 
     def open_digital_wallet(self, user_id: int) -> None:
         user = self.get_user(user_id)
@@ -397,8 +600,16 @@ class DigitalRublePlatform:
                 notes="Конвертация безналичных средств в цифровые рубли",
             )
             tx = self._create_transaction_record(context, status="CONFIRMED")
-            # для оффлайна создаём UTXO, но баланс цифрового кошелька уже пополнен выше
             self._create_utxo(user_id, amount, tx["id"])
+            block = self.ledger.append_block([tx], signer="ЦБ РФ")
+            cbr_sig = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+                (cbr_sig, tx["id"]),
+            )
+            self.consensus.run_round(block.hash)
+            self._replicate_block_to_banks(block, [tx])
+            self._log_block_flow(block, context)
             self._log_activity(
                 actor=user["name"],
                 stage="Конвертация средств",
@@ -444,7 +655,6 @@ class DigitalRublePlatform:
             raise ValueError("Оффлайн кошелек не активирован")
         utxo_balance = self._get_utxo_balance(user_id)
         if utxo_balance < amount:
-            # создаём дополнительное UTXO через служебную транзакцию, чтобы операция не блокировалась
             deficit = amount - utxo_balance
             mint_ctx = TransactionContext(
                 sender_id=user_id,
@@ -477,6 +687,15 @@ class DigitalRublePlatform:
             tx = self._create_transaction_record(context, status="CONFIRMED")
             self._spend_utxos(user_id, amount, tx["id"])
             self._create_utxo(user_id, amount, tx["id"])
+            block = self.ledger.append_block([tx], signer="ЦБ РФ")
+            cbr_sig = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
+                (cbr_sig, tx["id"]),
+            )
+            self.consensus.run_round(block.hash)
+            self._replicate_block_to_banks(block, [tx])
+            self._log_block_flow(block, context)
             self._log_activity(
                 actor=user["name"],
                 stage="Резерв для оффлайн",
@@ -503,7 +722,7 @@ class DigitalRublePlatform:
 
         utxo_balance = self._get_utxo_balance(sender_id)
         if utxo_balance < amount:
-            error_msg = f"Недостаточно UTXO для транзакции: доступно {utxo_balance:.2f}, требуется {amount:.2f}"
+            error_msg = f"Недостаточно UTXО для транзакции: доступно {utxo_balance:.2f}, требуется {amount:.2f}"
             self._log_failed_transaction(None, "INSUFFICIENT_UTXO", error_msg)
             self._log_activity(
                 actor=sender["name"],
@@ -578,7 +797,39 @@ class DigitalRublePlatform:
                 """,
                 (generate_id("off"), tx["id"]),
             )
-            change, _ = self._spend_utxos(sender_id, amount, tx["id"])
+            # специальное правило: для оффлайн‑транзакции используем ровно один UTXO,
+            # который лежит в диапазоне [amount, 2*amount], и создаём максимум одну сдачу
+            rows = self.db.execute(
+                """
+                SELECT id, amount FROM utxos
+                WHERE owner_id = ? AND status = 'UNSPENT'
+                ORDER BY amount ASC
+                """,
+                (sender_id,),
+                fetchall=True,
+            ) or []
+            candidate = None
+            for r in rows:
+                if r["amount"] >= amount:
+                    candidate = dict(r)
+                    break
+            if candidate is None:
+                error_msg = (
+                    f"Не найден подходящий UTXO для оффлайн транзакции: суммарный баланс недостаточен для суммы {amount:.2f}"
+                )
+                self._log_failed_transaction(None, "INSUFFICIENT_UTXO_OFFLINE", error_msg)
+                raise ValueError(error_msg)
+            utxo_id = candidate["id"]
+            utxo_amount = candidate["amount"]
+            self.db.execute(
+                """
+                UPDATE utxos
+                SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (tx["id"], utxo_id),
+            )
+            change = utxo_amount - amount
             if change > 0:
                 self._create_utxo(sender_id, change, tx["id"])
             self._log_activity(
@@ -614,7 +865,6 @@ class DigitalRublePlatform:
             receiver = self.get_user(row["receiver_id"])
             bank = self._get_bank(row["bank_id"])
             utxo_balance = self._get_utxo_balance(row["sender_id"])
-            # каждая 20-я синхронизируемая оффлайн-транзакция — симулируем двойную трату
             if self._offline_sync_counter % 20 == 0:
                 conflicts += 1
                 utxos = self._get_utxos(row["sender_id"], row["amount"])
@@ -664,7 +914,7 @@ class DigitalRublePlatform:
                 )
                 self._log_activity(
                     actor="ЦБ РФ",
-                    stage="Конфликт оффлайн УТХО",
+                    stage="Конфликт оффлайн UТХО",
                     details=error_message,
                     context="Оффлайн",
                 )
@@ -685,10 +935,6 @@ class DigitalRublePlatform:
                     "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
                     (cbr_sig, row["id"]),
                 )
-                change, _ = self._spend_utxos(row["sender_id"], row["amount"], row["id"])
-                self._create_utxo(row["receiver_id"], row["amount"], row["id"])
-                if change > 0:
-                    self._create_utxo(row["sender_id"], change, row["id"])
                 self.consensus.run_round(block.hash)
                 self._replicate_block_to_banks(block, [dict(row)])
                 self._log_activity(
@@ -741,7 +987,6 @@ class DigitalRublePlatform:
         tx = self._create_transaction_record(context, status="CONFIRMED")
         try:
             if context.tx_type == "CONTRACT":
-                # контракты работают по балансу (account-based), не трогаем UTXO
                 self._apply_balances(context.sender_id, context.receiver_id, context.amount, mode="digital")
             else:
                 if context.tx_type != "OFFLINE":
@@ -776,16 +1021,53 @@ class DigitalRublePlatform:
             context.amount,
             timestamp,
         )
-        payload = f"{tx_id}:{context.sender_id}:{context.receiver_id}:{context.amount}:{timestamp}"
-        user_sig = _sign("USER", context.sender_id, payload)
-        bank_sig = _sign("BANK", context.bank_id, payload)
+        payload_str = f"{tx_id}:{context.sender_id}:{context.receiver_id}:{context.amount}:{timestamp}"
+        user_sig = _sign("USER", context.sender_id, payload_str)
+        bank_sig = _sign("BANK", context.bank_id, payload_str)
+        payload_obj = {
+            "tx_id": tx_id,
+            "sender_id": context.sender_id,
+            "receiver_id": context.receiver_id,
+            "amount": context.amount,
+            "tx_type": context.tx_type,
+            "channel": context.channel,
+            "bank_id": context.bank_id,
+            "offline_flag": context.offline_flag,
+            "notes": context.notes,
+            "timestamp": timestamp,
+            "user_sig": user_sig,
+            "bank_sig": bank_sig,
+        }
+        payload_bytes = json.dumps(payload_obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        bank_key = self._get_encryption_key(context.bank_id)
+        iv, cipher = gost_crypto.encrypt_ctr(bank_key, payload_bytes)
+        # крипто‑лог: формирование и подписание транзакции
+        self._log_activity(
+            actor="Система",
+            stage="Формирование представления транзакции",
+            details=f"tx_id={tx_id}, sender={context.sender_id}, receiver={context.receiver_id}, amount={context.amount:.2f}",
+            context="Криптография",
+        )
+        self._log_activity(
+            actor="Система",
+            stage="Подпись транзакции",
+            details=f"tx_id={tx_id}, user_sig и bank_sig сформированы на основе строки '{payload_str}'",
+            context="Криптография",
+        )
+        self._log_activity(
+            actor="Система",
+            stage="Шифрование содержимого транзакции (ГОСТ 34.12-2018)",
+            details=f"tx_id={tx_id}, bank_id={context.bank_id}, iv={iv.hex()}, длина шифртекста={len(cipher)} байт",
+            context="Криптография",
+        )
         self.db.execute(
             """
             INSERT INTO transactions(id, sender_id, receiver_id, amount,
                                      tx_type, channel, status, timestamp,
                                      bank_id, hash, offline_flag, notes,
-                                     user_sig, bank_sig, cbr_sig)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                                     user_sig, bank_sig, cbr_sig,
+                                     payload_enc, payload_iv)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 tx_id,
@@ -802,6 +1084,8 @@ class DigitalRublePlatform:
                 context.notes,
                 user_sig,
                 bank_sig,
+                cipher,
+                iv,
             ),
         )
         self.consensus.log_transaction(tx_hash)
@@ -918,8 +1202,6 @@ class DigitalRublePlatform:
                     """,
                     (spending_tx_id, utxo_id),
                 )
-                if change > 0:
-                    self._create_utxo(owner_id, change, spending_tx_id)
                 remaining = 0
                 break
             else:
@@ -976,7 +1258,7 @@ class DigitalRublePlatform:
                 tuple(tx_ids),
                 fetchall=True,
             )
-            full_txs = [dict(r) for r in rows] if rows else []
+            full_txs = [self._ensure_transaction_encrypted(dict(r)) for r in rows] if rows else []
 
         for bank in banks:
             bank_id = bank["id"]
@@ -988,7 +1270,6 @@ class DigitalRublePlatform:
                     (block.height,),
                     fetchone=True,
                 )
-                # узел получает блок только если в нём есть транзакции, относящиеся к этому банку
                 txs_for_bank = [tx for tx in full_txs if tx["bank_id"] == bank_id]
                 if not txs_for_bank:
                     continue
@@ -1021,8 +1302,9 @@ class DigitalRublePlatform:
                             INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
                                                                tx_type, channel, status, timestamp,
                                                                bank_id, hash, offline_flag, notes,
-                                                               user_sig, bank_sig, cbr_sig)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                               user_sig, bank_sig, cbr_sig,
+                                                               payload_enc, payload_iv)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 tx["id"],
@@ -1040,6 +1322,8 @@ class DigitalRublePlatform:
                                 tx.get("user_sig"),
                                 tx.get("bank_sig"),
                                 tx.get("cbr_sig"),
+                                tx.get("payload_enc"),
+                                tx.get("payload_iv"),
                             ),
                         )
                         local_db.execute(
@@ -1053,7 +1337,6 @@ class DigitalRublePlatform:
                         context="Блокчейн",
                     )
             except Exception as e:
-                # подавляем ошибки репликации
                 self._log_activity(
                     actor=bank["name"],
                     stage="Репликация блока",
@@ -1136,12 +1419,32 @@ class DigitalRublePlatform:
         contract_id = generate_id("sc")
         if next_execution is None:
             next_execution = datetime.utcnow() + timedelta(days=36500)
+        # формируем и шифруем содержимое смарт‑контракта
+        core = {
+            "id": contract_id,
+            "creator_id": creator_id,
+            "beneficiary_id": beneficiary_id,
+            "bank_id": bank_id,
+            "amount": amount,
+            "description": description,
+            "schedule": "ONCE",
+            "next_execution": next_execution.isoformat(),
+        }
+        payload_bytes = json.dumps(core, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        bank_key = self._get_encryption_key(bank_id)
+        sc_iv, sc_cipher = gost_crypto.encrypt_ctr(bank_key, payload_bytes)
+        self._log_activity(
+            actor="Система",
+            stage="Шифрование содержимого смарт‑контракта",
+            details=f"contract_id={contract_id}, bank_id={bank_id}, iv={sc_iv.hex()}, длина={len(sc_cipher)} байт",
+            context="Криптография",
+        )
         self.db.execute(
             """
             INSERT INTO smart_contracts(id, creator_id, beneficiary_id, bank_id, amount,
                                         description, schedule, next_execution,
-                                        status, required_balance)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?)
+                                        status, required_balance, payload_enc, payload_iv)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?)
             """,
             (
                 contract_id,
@@ -1153,6 +1456,8 @@ class DigitalRublePlatform:
                 "ONCE",
                 next_execution.isoformat(),
                 amount,
+                sc_cipher,
+                sc_iv,
             ),
         )
         self._log_activity(
@@ -1230,10 +1535,11 @@ class DigitalRublePlatform:
                 """
                 UPDATE smart_contracts
                 SET status = 'EXECUTED',
-                    last_execution = CURRENT_TIMESTAMP
+                    last_execution = CURRENT_TIMESTAMP,
+                    last_tx_id = ?
                 WHERE id = ?
                 """,
-                (contract["id"],),
+                (tx["id"], contract["id"]),
             )
             self._log_activity(
                 actor="ЦБ РФ",
@@ -1454,8 +1760,10 @@ class DigitalRublePlatform:
         transactions = self.db.execute(
             "SELECT * FROM transactions ORDER BY timestamp ASC", fetchall=True
         )
-        
-        tx_dict = {tx["id"]: tx for tx in transactions}
+        tx_dict = {}
+        for row in transactions or []:
+            tx = self._decrypt_transaction_row(dict(row))
+            tx_dict[tx["id"]] = tx
         
         log_lines = []
         log_lines.append("=" * 80)
@@ -1477,7 +1785,7 @@ class DigitalRublePlatform:
             log_lines.append(f"  Количество транзакций: {block['tx_count']}")
             log_lines.append(f"  Время формирования: {block['duration_ms']:.2f} мс")
             
-            block_txs = self.db.execute(
+            block_txs_rows = self.db.execute(
                 """
                 SELECT t.* FROM transactions t
                 JOIN block_transactions bt ON bt.tx_id = t.id
@@ -1489,9 +1797,10 @@ class DigitalRublePlatform:
                 fetchall=True,
             )
             
-            if block_txs:
+            if block_txs_rows:
                 log_lines.append("  Транзакции в блоке:")
-                for tx in block_txs:
+                for row in block_txs_rows:
+                    tx = self._decrypt_transaction_row(dict(row))
                     sender = self.get_user(tx['sender_id'])
                     receiver = self.get_user(tx['receiver_id'])
                     bank = self._get_bank(tx['bank_id'])
@@ -1533,7 +1842,7 @@ class DigitalRublePlatform:
                     log_lines.append(f"    Nonce: {lb['nonce']}")
                     log_lines.append(f"    Количество транзакций: {lb['tx_count']}")
                     log_lines.append(f"    Время формирования: {lb['duration_ms']:.2f} мс")
-                    ltxs = bank_db.execute(
+                    ltxs_rows = bank_db.execute(
                         """
                         SELECT t.* FROM transactions t
                         JOIN block_transactions bt ON bt.tx_id = t.id
@@ -1544,9 +1853,10 @@ class DigitalRublePlatform:
                         (lb['height'],),
                         fetchall=True,
                     )
-                    if ltxs:
+                    if ltxs_rows:
                         log_lines.append("    Транзакции в блоке:")
-                        for tx in ltxs:
+                        for row in ltxs_rows:
+                            tx = self._decrypt_transaction_row(dict(row))
                             log_lines.append(f"      - TX {tx['id']}")
                             log_lines.append(f"        Отправитель ID: {tx['sender_id']}")
                             log_lines.append(f"        Получатель ID: {tx['receiver_id']}")

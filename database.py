@@ -242,6 +242,16 @@ class DatabaseManager:
                 resolved INTEGER DEFAULT 0
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS encryption_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_type TEXT NOT NULL,
+                owner_id INTEGER NOT NULL,
+                key BLOB NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(owner_type, owner_id)
+            );
+            """,
         ]
         with self._cursor() as cur:
             for stmt in schema_statements:
@@ -268,6 +278,16 @@ class DatabaseManager:
                 "user_sig": "TEXT",
                 "bank_sig": "TEXT",
                 "cbr_sig": "TEXT",
+                "payload_enc": "BLOB",
+                "payload_iv": "BLOB",
+            },
+        )
+        self._ensure_columns(
+            "smart_contracts",
+            {
+                "payload_enc": "BLOB",
+                "payload_iv": "BLOB",
+                "last_tx_id": "TEXT",
             },
         )
         self._ensure_columns(

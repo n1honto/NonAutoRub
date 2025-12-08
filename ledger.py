@@ -118,6 +118,24 @@ class DistributedLedger:
         )
         block.duration_ms = (time.perf_counter() - start) * 1000
         block.seal()
+        # крипто‑лог: вычисление Merkle‑корня и хэша блока
+        try:
+            tx_hashes = [tx["hash"] for tx in tx_list]
+            self.db.execute(
+                """
+                INSERT INTO activity_log(actor, stage, details, context)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "Система",
+                    "Вычисление Merkle‑корня блока",
+                    f"height={block.height}, tx_hashes={tx_hashes}, merkle_root={block.merkle_root}",
+                    "Криптография",
+                ),
+            )
+        except Exception:
+            # крипто‑лог не должен ломать формирование блока
+            pass
 
         self.db.execute(
             """

@@ -325,7 +325,6 @@ class RaftConsensus:
             "LEADER_APPEND",
         )
 
-        # этап голосования за подписание блока
         nodes = self.get_nodes()
         for node in nodes:
             if node == self.node_id:
