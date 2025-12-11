@@ -17,6 +17,7 @@ class DatabaseManager:
             self._conn.execute("PRAGMA foreign_keys = ON;")
         self._bootstrap_schema()
         self._backfill_legacy_schema()
+        self._create_indexes()
 
     @contextmanager
     def _cursor(self):
@@ -329,6 +330,45 @@ class DatabaseManager:
             names = {row[1] for row in cur.fetchall()}
             cur.close()
             return names
+
+    def _create_indexes(self) -> None:
+        """Создание индексов для оптимизации запросов"""
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_sender ON transactions(sender_id)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON transactions(receiver_id)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_bank ON transactions(bank_id)",
+            "CREATE INDEX IF NOT EXISTS idx_blocks_previous_hash ON blocks(previous_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height)",
+            "CREATE INDEX IF NOT EXISTS idx_block_transactions_block_id ON block_transactions(block_id)",
+            "CREATE INDEX IF NOT EXISTS idx_block_transactions_tx_id ON block_transactions(tx_id)",
+            "CREATE INDEX IF NOT EXISTS idx_utxos_owner_status ON utxos(owner_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_utxos_created_tx ON utxos(created_tx_id)",
+            "CREATE INDEX IF NOT EXISTS idx_utxos_spent_tx ON utxos(spent_tx_id)",
+            "CREATE INDEX IF NOT EXISTS idx_smart_contracts_status ON smart_contracts(status)",
+            "CREATE INDEX IF NOT EXISTS idx_smart_contracts_next_execution ON smart_contracts(next_execution)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_log_stage ON activity_log(stage)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_log_context ON activity_log(context)",
+            "CREATE INDEX IF NOT EXISTS idx_consensus_events_block_hash ON consensus_events(block_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_consensus_events_created_at ON consensus_events(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_type_status ON transactions(tx_type, status)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_channel ON transactions(channel)",
+            "CREATE INDEX IF NOT EXISTS idx_offline_transactions_status ON offline_transactions(status)",
+            "CREATE INDEX IF NOT EXISTS idx_offline_transactions_tx_id ON offline_transactions(tx_id)",
+            "CREATE INDEX IF NOT EXISTS idx_smart_contracts_creator ON smart_contracts(creator_id)",
+            "CREATE INDEX IF NOT EXISTS idx_smart_contracts_beneficiary ON smart_contracts(beneficiary_id)",
+            "CREATE INDEX IF NOT EXISTS idx_failed_transactions_created_at ON failed_transactions(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_failed_transactions_resolved ON failed_transactions(resolved)",
+        ]
+        with self._cursor() as cur:
+            for index_sql in indexes:
+                try:
+                    cur.execute(index_sql)
+                except sqlite3.OperationalError:
+                    # Индекс уже существует или таблица не существует
+                    pass
 
 
 __all__ = ["DatabaseManager"]

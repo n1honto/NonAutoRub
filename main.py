@@ -5,9 +5,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 
-import gost_crypto
 from consensus import MasterchainConsensus
-from platform import DigitalRublePlatform
+from platform import DigitalRublePlatform, _hash_str
 
 
 class DigitalRubleApp(tk.Tk):
@@ -112,43 +111,11 @@ class DigitalRubleApp(tk.Tk):
         frame.columnconfigure(0, weight=1)
         text.insert(tk.END, "\n".join(lines))
         text.config(state="disabled")
-        if export_handler is not None or export_plain_handler is not None:
-            btn_frame = ttk.Frame(win)
-            btn_frame.pack(fill=tk.X, pady=(8, 0))
-            if export_plain_handler is not None:
-                ttk.Button(
-                    btn_frame,
-                    text="Экспортировать JSON (открытый)",
-                    command=export_plain_handler,
-                ).pack(side=tk.RIGHT, padx=(0, 8))
-            if export_handler is not None:
-                ttk.Button(
-                    btn_frame,
-                    text="Экспортировать JSON (ГОСТ‑шифрование)",
-                    command=export_handler,
-                ).pack(side=tk.RIGHT)
+        # Экспорт JSON отключен по требованию
 
     def _export_encrypted_json(self, default_name: str, payload: dict, bank_id: int | None) -> None:
-        if bank_id is None:
-            messagebox.showerror("Экспорт", "Невозможно определить банк для выбора ключа шифрования.")
-            return
-        try:
-            key = self.platform._get_encryption_key(int(bank_id))
-            raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            iv, cipher = gost_crypto.encrypt_ctr(key, raw)
-            filename = filedialog.asksaveasfilename(
-                title="Сохранить зашифрованный JSON",
-                defaultextension=".enc",
-                initialfile=default_name,
-                filetypes=[("Encrypted files", "*.enc"), ("All files", "*.*")],
-            )
-            if not filename:
-                return
-            with open(filename, "wb") as f:
-                f.write(iv + cipher)
-            messagebox.showinfo("Экспорт", f"Зашифрованный JSON сохранён в файл:\n{filename}")
-        except Exception as exc:
-            messagebox.showerror("Экспорт", f"Ошибка шифрования/экспорта: {exc}")
+        # Шифрование больше не используется, функция оставлена для совместимости
+        messagebox.showinfo("Экспорт", "Шифрование отключено. Используйте экспорт открытого JSON.")
 
     def _export_plain_json(self, default_name: str, payload: dict) -> None:
         try:
@@ -683,7 +650,11 @@ class DigitalRubleApp(tk.Tk):
         sender = self.platform.get_user(tx["sender_id"])
         receiver = self.platform.get_user(tx["receiver_id"])
         bank = self.platform._get_bank(tx["bank_id"])
-        payload_str = f"{tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}"
+        core_str = f"{tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}"
+        # Вычисляем хеш для подписи
+        tx_hash_for_sig = self.platform._get_transaction_hash_for_signing(
+            tx['id'], tx['sender_id'], tx['receiver_id'], tx['amount'], tx['timestamp']
+        )
         block_row = self.platform.db.execute(
             """
             SELECT b.height, b.hash
@@ -697,55 +668,121 @@ class DigitalRubleApp(tk.Tk):
             fetchone=True,
         )
         lines: list[str] = []
-        lines.append(f"Транзакция {tx['id']}")
+        lines.append(f"Жизненный цикл транзакции {tx['id']}")
+        lines.append("=" * 60)
         lines.append("")
-        lines.append("1. Подписание пользователем")
-        lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
-        lines.append(f"  Получатель: {receiver['name']} (ID {receiver['id']})")
-        lines.append(f"  Сумма: {tx['amount']:.2f} ЦР")
-        lines.append(f"  Банк (ФО): {bank['name']} (ID {bank['id']})")
-        lines.append(f"  Формируемый payload для подписи: {payload_str}")
+        lines.append("ЭТАП 1: ИНИЦИАЦИЯ ТРАНЗАКЦИИ")
+        lines.append(f"  • Отправитель: {sender['name']} (ID {sender['id']})")
+        lines.append(f"  • Получатель: {receiver['name']} (ID {receiver['id']})")
+        lines.append(f"  • Сумма: {tx['amount']:.2f} ЦР")
+        lines.append(f"  • Банк (ФО): {bank['name']} (ID {bank['id']})")
+        lines.append(f"  • Тип транзакции: {tx.get('tx_type', 'ONLINE')}")
+        lines.append(f"  • Временная метка: {tx['timestamp']}")
+        lines.append("")
+        lines.append("ЭТАП 2: ФОРМИРОВАНИЕ КАНОНИЧЕСКОЙ СТРОКИ")
+        lines.append("  Формируется строка core, содержащая основные данные транзакции:")
+        lines.append(f"    core = {tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}")
+        lines.append("")
+        lines.append("ЭТАП 3: ВЫЧИСЛЕНИЕ ХЕША ТРАНЗАКЦИИ")
+        lines.append("  Хеш вычисляется по алгоритму Streebog-256 (ГОСТ Р 34.11-2018):")
+        lines.append(f"    H = Streebog-256(core)")
+        lines.append(f"    tx.hash = {tx['hash']}")
+        lines.append("  Хеш транзакции используется для:")
+        lines.append("    • идентификации транзакции в блокчейне")
+        lines.append("    • вычисления Merkle-корня блока")
+        lines.append("    • связи блоков через previous_hash")
+        lines.append("")
+        lines.append("ЭТАП 4: ЭЛЕКТРОННАЯ ЦИФРОВАЯ ПОДПИСЬ (ЭЦП) ПОЛЬЗОВАТЕЛЯ")
+        lines.append("  Алгоритм подписания по ГОСТ 34.10-2018:")
+        lines.append("    1. Вычисляется хеш для подписи: H_sig = Streebog-256(core)")
+        lines.append(f"       Хеш для подписи: {tx_hash_for_sig}")
+        lines.append("    2. Выбирается эллиптическая кривая с параметрами:")
+        lines.append("       • Модуль p (простое число)")
+        lines.append("       • Порядок группы q")
+        lines.append("       • Коэффициенты a, b уравнения кривой")
+        lines.append("       • Генерирующая точка P")
+        lines.append("    3. Генерируется случайное число k ∈ [1, q-1]")
+        lines.append("    4. Вычисляется точка эллиптической кривой: C = k * P")
+        lines.append("    5. Вычисляется r = Cx mod q")
+        lines.append("       Если r = 0, выбирается новое k и повторяется шаг 4")
+        lines.append("    6. Вычисляется s = (r * d + k * H_sig) mod q")
+        lines.append("       где d - приватный ключ пользователя")
+        lines.append("       Если s = 0, выбирается новое k и повторяется шаг 4")
+        lines.append("    7. ЭЦП = (r, s) - пара 256-битных чисел")
         if tx.get("user_sig"):
-            lines.append(f"  Подпись пользователя user_sig = {tx['user_sig']}")
+            lines.append(f"  Результат: ЭЦП пользователя сохранена")
+            lines.append(f"    Формат: JSON строка с полями 'r' и 's'")
+            lines.append(f"    Значение: {tx['user_sig'][:100]}...")
+        else:
+            lines.append("  ЭЦП пользователя отсутствует (демонстрационный режим).")
         lines.append("")
-        lines.append("2. Подпись банка")
+        lines.append("ЭТАП 5: ЭЛЕКТРОННАЯ ЦИФРОВАЯ ПОДПИСЬ БАНКА (ФО)")
         if tx.get("bank_sig"):
-            lines.append(f"  Банк формирует подпись bank_sig по тому же payload")
-            lines.append(f"  Подпись банка bank_sig = {tx['bank_sig']}")
+            lines.append("  Банк формирует ЭЦП по тому же хешу транзакции:")
+            lines.append(f"    Хеш для подписи: {tx_hash_for_sig}")
+            lines.append("  Процесс идентичен процессу для пользователя:")
+            lines.append("    1. Вычисляется хеш сообщения: H_sig = Streebog-256(core)")
+            lines.append("    2. Генерируется случайное число k ∈ [1, q-1]")
+            lines.append("    3. Вычисляется точка эллиптической кривой: C = k * P")
+            lines.append("    4. Вычисляется r = Cx mod q (если r=0, повторяется с новым k)")
+            lines.append("    5. Вычисляется s = (r * d_bank + k * H_sig) mod q (если s=0, повторяется)")
+            lines.append("    6. ЭЦП банка = (r, s)")
+            lines.append(f"  Электронная цифровая подпись банка (ФО) сохранена")
+            lines.append(f"    Формат: JSON строка с полями 'r' и 's' (256-битные числа)")
         else:
-            lines.append("  Подпись банка отсутствует (демонстрационный режим).")
+            lines.append("  Электронная цифровая подпись банка (ФО) отсутствует (демонстрационный режим).")
         lines.append("")
-        lines.append("3. Шифрование полезной нагрузки (ГОСТ 34.12‑2018, режим CTR)")
-        enc = tx.get("payload_enc")
-        iv = tx.get("payload_iv")
-        if enc and iv:
-            lines.append(f"  Случайный вектор инициализации IV (16 байт): {iv.hex()}")
-            lines.append("  Полезная нагрузка кодируется в JSON и шифруется блочным шифром «Кузнечик».")
-            lines.append(f"  Длина шифротекста payload_enc: {len(enc)} байт")
-            lines.append(f"  Первые байты payload_enc (hex): {enc.hex()[:64]}...")
+        lines.append("ЭТАП 6: ВАЛИДАЦИЯ ПОДПИСЕЙ")
+        lines.append("  Система проверяет валидность подписей:")
+        lines.append("    • Проверка ЭЦП пользователя: верификация подписи по публичному ключу отправителя")
+        lines.append("    • Проверка электронной цифровой подписи банка (ФО): верификация подписи по публичному ключу банка")
+        lines.append("    • При невалидной подписи транзакция отклоняется")
+        lines.append("")
+        lines.append("ЭТАП 7: ОБРАБОТКА ТРАНЗАКЦИИ")
+        if tx.get('tx_type') == 'OFFLINE':
+            lines.append("  Для оффлайн-транзакций:")
+            lines.append("    • Проверка UTXO отправителя")
+            lines.append("    • Выбор UTXO для покрытия суммы")
+            lines.append("    • Создание выходных UTXO для получателя и сдачи")
         else:
-            lines.append("  Для этой транзакции зашифрованный payload недоступен (отсутствуют поля payload_enc/payload_iv).")
+            lines.append("  Для онлайн-транзакций:")
+            lines.append("    • Проверка баланса отправителя")
+            lines.append("    • Списание средств с баланса отправителя")
+            lines.append("    • Зачисление средств на баланс получателя")
         lines.append("")
-        lines.append("4. Хэш транзакции")
-        lines.append("  Хэш формируется как UUIDv5 от канонической строки core:")
-        lines.append("    core = tx_id || sender_id || receiver_id || amount || timestamp")
-        lines.append(f"  Итоговое значение хэша (tx.hash): {tx['hash']}")
-        lines.append("")
-        lines.append("5. Сохранение транзакции")
-        lines.append("  Запись добавляется в таблицу transactions с полями:")
-        lines.append("    id, sender_id, receiver_id, amount, tx_type, channel, status, timestamp,")
-        lines.append("    bank_id, hash, offline_flag, notes, user_sig, bank_sig, cbr_sig, payload_enc, payload_iv.")
-        lines.append("")
-        lines.append("6. Включение транзакции в блок распределённого реестра")
+        lines.append("ЭТАП 8: ВКЛЮЧЕНИЕ В БЛОК РАСПРЕДЕЛЁННОГО РЕЕСТРА")
         if block_row:
-            lines.append(
-                f"  Транзакция включена в блок #{block_row['height']} с хэшем {block_row['hash']} "
-                "через запись в таблице block_transactions (связка block_id ↔ tx_id)."
-            )
+            lines.append(f"  Транзакция включена в блок #{block_row['height']}")
+            lines.append(f"    Хеш блока: {block_row['hash']}")
+            lines.append("    Связь транзакции с блоком устанавливается через:")
+            lines.append("      • Связь транзакции с блоком: block_id ↔ tx_id")
+            lines.append("      • Транзакция становится частью Merkle-дерева блока")
+            lines.append("      • Хеш транзакции используется для вычисления merkle_root")
         else:
-            lines.append(
-                "  На данный момент транзакция ещё не привязана к конкретному блоку (отсутствует запись в block_transactions)."
+            lines.append("  На данный момент транзакция ещё не включена в блок.")
+            lines.append("    Транзакция находится в статусе CONFIRMED и ожидает включения в следующий блок.")
+        lines.append("")
+        lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
+        lines.append("  После включения в блок транзакция реплицируется на все узлы:")
+        banks = self.platform.list_banks()
+        for bank in banks:
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
+            tx_exists = bank_db.execute(
+                "SELECT id FROM transactions WHERE id = ?",
+                (tx_id,),
+                fetchone=True
             )
+            if tx_exists:
+                lines.append(f"    ✓ Транзакция присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+            else:
+                lines.append(f"    ✗ Транзакция отсутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+        lines.append("")
+        lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
+        lines.append("  Транзакция считается завершённой после:")
+        lines.append("    • Включения в блок распределённого реестра")
+        lines.append("    • Репликации на все узлы сети")
+        lines.append("    • Подтверждения консенсусом (RAFT)")
         export_payload = {
             "type": "transaction",
             "id": tx["id"],
@@ -761,12 +798,8 @@ class DigitalRubleApp(tk.Tk):
         self._show_steps_window(
             "Этапы обработки транзакции",
             lines,
-            export_handler=lambda: self._export_encrypted_json(
-                f"transaction_{tx_id}.enc", export_payload, tx["bank_id"]
-            ),
-            export_plain_handler=lambda: self._export_plain_json(
-                f"transaction_{tx_id}.json", export_payload
-            ),
+            export_handler=None,
+            export_plain_handler=None,
         )
 
     def _on_offline_row_double_click(self, event) -> None:
@@ -810,21 +843,27 @@ class DigitalRubleApp(tk.Tk):
             fetchall=True,
         ) or []
         lines: list[str] = []
-        lines.append(f"Оффлайн-транзакция {tx_id}")
+        lines.append(f"Жизненный цикл оффлайн-транзакции {tx_id}")
+        lines.append("=" * 60)
         lines.append("")
-        lines.append("1. Подготовка оффлайн‑кошелька и UTXO")
+        lines.append("ЭТАП 1: ПОДГОТОВКА ОФФЛАЙН‑КОШЕЛЬКА И UTXO")
         lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
         lines.append(f"  Статус оффлайн‑кошелька: {self._translate_wallet_status(sender['offline_status'])}")
         lines.append(f"  Активация: {sender.get('offline_activated_at') or '-'}")
         lines.append(f"  Окончание: {sender.get('offline_expires_at') or '-'}")
         lines.append("")
-        lines.append("2. Формирование оффлайн‑транзакции")
+        lines.append("ЭТАП 2: ФОРМИРОВАНИЕ ОФФЛАЙН‑ТРАНЗАКЦИИ")
         lines.append(f"  Отправитель: {sender['name']} (ID {sender['id']})")
         lines.append(f"  Получатель: {receiver['name']} (ID {receiver['id']})")
         lines.append(f"  Банк (ФО): {bank['name']}")
         lines.append(f"  Сумма: {tx['amount']:.2f} ЦР")
+        lines.append("  Процесс формирования:")
+        lines.append("    • Выбор параметров: отправитель, получатель, банк, сумма")
+        lines.append("    • Выбор UTXO для покрытия суммы (один UTXO в диапазоне [amount, 2*amount])")
+        lines.append("    • Расчёт сдачи (change = UTXO_amount - amount)")
+        lines.append("    • Формирование offline_tx_core с входами, выходами и метаданными")
         lines.append("")
-        lines.append("3. Входы (список UTXO)")
+        lines.append("ЭТАП 3: ВЫБОР UTXO (ВХОДЫ)")
         total_in = 0.0
         if utxos_in:
             for u in utxos_in:
@@ -834,41 +873,87 @@ class DigitalRubleApp(tk.Tk):
             lines.append("  Для этой транзакции не найдено списанных UTXO")
         lines.append(f"  Итого по входам: {total_in:.2f} ЦР")
         lines.append("")
-        lines.append("4. Выходы (созданные UTXO)")
+        lines.append("ЭТАП 4: СОЗДАНИЕ ВЫХОДНЫХ UTXO")
         if utxos_out:
             for u in utxos_out:
                 lines.append(f"  UTXO {u['id']} на сумму {u['amount']:.2f} ЦР (owner_id={u['owner_id']})")
+            lines.append("  Создаётся один выходной UTXO для получателя на сумму транзакции")
+            lines.append("  Если есть сдача, создаётся дополнительный UTXO для отправителя")
         else:
             lines.append("  Новые UTXO по этой транзакции ещё не созданы (ожидание синхронизации).")
         lines.append("")
-        lines.append("5. Криптография оффлайн‑транзакции")
-        enc = tx.get("payload_enc")
-        iv = tx.get("payload_iv")
-        if enc and iv:
-            lines.append("  На стороне отправителя формируется offline_tx_core:")
-            lines.append("    core = {id, sender_id, receiver_id, amount, bank_id, offline_flag, timestamp, подписи}.")
-            lines.append("  Эта структура сериализуется в JSON и шифруется ГОСТ 34.12‑2018 (Кузнечик) в режиме CTR:")
-            lines.append(f"    • IV (вектор инициализации, 16 байт) для счётчика CTR: {iv.hex()}")
-            lines.append("    • для каждого блока вычисляется keystream_i = E_K(IV + i), затем plaintext_i XOR keystream_i → ciphertext_i;")
-            lines.append("    • результат сохраняется в поле payload_enc, IV — в поле payload_iv.")
-            lines.append(f"    • длина payload_enc: {len(enc)} байт; первые байты (hex): {enc.hex()[:64]}...")
-        else:
-            lines.append("  Криптографическое представление оффлайн‑записи недоступно (отсутствуют поля payload_enc/payload_iv).")
+        lines.append("ЭТАП 5: ЭЛЕКТРОННАЯ ЦИФРОВАЯ ПОДПИСЬ (ЭЦП) ОФФЛАЙН‑ТРАНЗАКЦИИ")
+        tx_hash_for_sig = self.platform._get_transaction_hash_for_signing(
+            tx['id'], tx['sender_id'], tx['receiver_id'], tx['amount'], tx['timestamp']
+        )
+        lines.append("  Процесс подписания по ГОСТ 34.10-2018:")
+        lines.append("    1. Формирование канонической строки (core):")
+        lines.append(f"       core = {tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}")
+        lines.append("    2. Вычисление хеша сообщения:")
+        lines.append(f"       H_sig = Streebog-256(core) = {tx_hash_for_sig}")
+        lines.append("    3. Генерация ЭЦП пользователя:")
+        lines.append("       • Выбирается эллиптическая кривая с параметрами (p, q, a, b, P)")
+        lines.append("       • Генерируется случайное число k ∈ [1, q-1]")
+        lines.append("       • Вычисляется точка C = k * P")
+        lines.append("       • Вычисляется r = Cx mod q (если r=0, повторяется с новым k)")
+        lines.append("       • Вычисляется s = (r * d_user + k * H_sig) mod q (если s=0, повторяется)")
+        lines.append("       • ЭЦП пользователя = (r, s)")
+        if tx.get("user_sig"):
+            lines.append(f"    4. ЭЦП пользователя сохранена: {tx['user_sig'][:80]}...")
+        lines.append("    5. Электронная цифровая подпись банка (ФО) формируется аналогично")
+        if tx.get("bank_sig"):
+            lines.append(f"    6. Электронная цифровая подпись банка (ФО) сохранена: {tx['bank_sig'][:80]}...")
+        lines.append("  Важно: хеш транзакции НЕ изменяется при подписании ЭЦП")
         lines.append("")
-        lines.append("6. Синхронизация с ЦБ и включение в блок")
-        lines.append(f"  Статус записи в offline_transactions: {tx.get('offline_status', '-')}")
-        lines.append(f"  Время синхронизации (synced_at): {tx.get('synced_at') or '-'}")
+        lines.append("ЭТАП 6: ЛОКАЛЬНОЕ ХРАНЕНИЕ")
+        lines.append("  Оффлайн-транзакция сохраняется локально на устройстве пользователя")
+        lines.append("  Статус: CREATED (ожидает синхронизации)")
+        lines.append("")
+        lines.append("ЭТАП 7: СИНХРОНИЗАЦИЯ С ЦБ")
+        lines.append("  Процесс синхронизации:")
+        lines.append("    1. Отправка батча оффлайн-транзакций на ЦБ")
+        lines.append("    2. Расшифровка и проверка на стороне ЦБ:")
+        lines.append("       • Расшифровка offline_tx_core и sig_user_offline")
+        lines.append("       • Проверка ЭЦП пользователя")
+        lines.append("       • Проверка, что UTXO не были потрачены ранее (защита от двойной траты)")
+        lines.append("    3. Подтверждение или отклонение:")
+        lines.append("       • При успехе: создаётся транзакция в общем реестре (тип OFFLINE_SYNC)")
+        lines.append("       • При конфликте: транзакция отклоняется с указанием причины")
+        lines.append(f"  Статус: {tx.get('offline_status', '-')}")
+        lines.append(f"  Время синхронизации: {tx.get('synced_at') or '-'}")
         if tx.get("conflict_reason"):
-            lines.append(f"  Причина конфликта (conflict_reason): {tx['conflict_reason']}")
+            lines.append(f"  Причина конфликта: {tx['conflict_reason']}")
+        lines.append("")
+        lines.append("ЭТАП 8: ВКЛЮЧЕНИЕ В БЛОК РАСПРЕДЕЛЁННОГО РЕЕСТРА")
         if block_row:
-            lines.append(
-                f"  В таблице transactions существует подтверждённая запись по этой оффлайн‑операции "
-                f"и связь с блоком #{block_row['height']} (hash={block_row['hash']}) через block_transactions."
-            )
+            lines.append(f"  Транзакция включена в блок #{block_row['height']}")
+            lines.append(f"    Хеш блока: {block_row['hash']}")
+            lines.append("    Связь транзакции с блоком устанавливается через block_transactions")
         else:
-            lines.append(
-                "  Для данной оффлайн‑записи ещё не найден связанный блок в главном реестре (нет записи в block_transactions)."
+            lines.append("  Транзакция ещё не включена в блок (ожидание обработки)")
+        lines.append("")
+        lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
+        lines.append("  После включения в блок транзакция реплицируется на все узлы")
+        banks = self.platform.list_banks()
+        for bank in banks:
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
+            tx_exists = bank_db.execute(
+                "SELECT id FROM transactions WHERE id = ?",
+                (tx_id,),
+                fetchone=True
             )
+            if tx_exists:
+                lines.append(f"    ✓ Транзакция присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+            else:
+                lines.append(f"    ✗ Транзакция отсутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+        lines.append("")
+        lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
+        lines.append("  Оффлайн-транзакция считается завершённой после:")
+        lines.append("    • Синхронизации с ЦБ")
+        lines.append("    • Включения в блок распределённого реестра")
+        lines.append("    • Репликации на все узлы сети")
+        lines.append("    • Подтверждения консенсусом (RAFT)")
         export_payload = {
             "type": "offline_transaction",
             "id": tx["id"],
@@ -884,12 +969,8 @@ class DigitalRubleApp(tk.Tk):
         self._show_steps_window(
             "Этапы оффлайн‑транзакции",
             lines,
-            export_handler=lambda: self._export_encrypted_json(
-                f"offline_tx_{tx_id}.enc", export_payload, tx["bank_id"]
-            ),
-            export_plain_handler=lambda: self._export_plain_json(
-                f"offline_tx_{tx_id}.json", export_payload
-            ),
+            export_handler=None,
+            export_plain_handler=None,
         )
 
     def _on_contract_row_double_click(self, event) -> None:
@@ -911,9 +992,10 @@ class DigitalRubleApp(tk.Tk):
         beneficiary = self.platform.get_user(sc["beneficiary_id"])
         bank = self.platform._get_bank(sc["bank_id"])
         lines: list[str] = []
-        lines.append(f"Смарт‑контракт {contract_id}")
+        lines.append(f"Жизненный цикл смарт‑контракта {contract_id}")
+        lines.append("=" * 60)
         lines.append("")
-        lines.append("1. Создание смарт‑контракта (contract_core)")
+        lines.append("ЭТАП 1: СОЗДАНИЕ СМАРТ‑КОНТРАКТА")
         lines.append(f"  Плательщик: {creator['name']} (ID {creator['id']})")
         lines.append(f"  Получатель: {beneficiary['name']} (ID {beneficiary['id']})")
         lines.append(f"  Банк (ФО): {bank['name']}")
@@ -921,29 +1003,46 @@ class DigitalRubleApp(tk.Tk):
         lines.append(f"  Описание: {sc['description']}")
         lines.append(f"  График (schedule): {sc['schedule']}")
         lines.append(f"  Следующее исполнение (next_execution): {sc['next_execution']}")
+        lines.append("  Процесс создания:")
+        lines.append("    • Ввод параметров: плательщик, получатель, сумма, условия, периодичность")
+        lines.append("    • Формирование объекта contract_core с идентификатором и параметрами графика")
+        lines.append("    • Связывание с участниками и их кошельками")
         lines.append("")
-        lines.append("2. Подписание contract_core")
-        lines.append("  Формируется детерминированная строка/JSON contract_core (id, creator_id, beneficiary_id, bank_id, amount, schedule, next_execution).")
-        lines.append("  Создатель вычисляет хэш от contract_core и подписывает его своим приватным ключом (sig_creator).")
-        lines.append("  При необходимости может добавляться подпись банка и/или ЦБ по тому же представлению данных.")
+        lines.append("ЭТАП 2: ЭЛЕКТРОННАЯ ЦИФРОВАЯ ПОДПИСЬ (ЭЦП) СМАРТ‑КОНТРАКТА")
+        contract_hash = _hash_str(f"{contract_id}:{sc['creator_id']}:{sc['beneficiary_id']}:{sc['amount']}:{sc['next_execution']}")
+        lines.append("  Процесс подписания по ГОСТ 34.10-2018:")
+        lines.append("    1. Формирование канонической строки (core):")
+        lines.append(f"       core = {contract_id}:{sc['creator_id']}:{sc['beneficiary_id']}:{sc['amount']}:{sc['next_execution']}")
+        lines.append("    2. Вычисление хеша сообщения:")
+        lines.append(f"       H = Streebog-256(core) = {contract_hash}")
+        lines.append("    3. Генерация ЭЦП создателя:")
+        lines.append("       • Выбирается эллиптическая кривая с параметрами (p, q, a, b, P)")
+        lines.append("       • Генерируется случайное число k ∈ [1, q-1]")
+        lines.append("       • Вычисляется точка C = k * P")
+        lines.append("       • Вычисляется r = Cx mod q (если r=0, повторяется)")
+        lines.append("       • Вычисляется s = (r * d_creator + k * H) mod q (если s=0, повторяется)")
+        lines.append("       • ЭЦП создателя = (r, s)")
+        lines.append("    4. Электронная цифровая подпись банка (ФО) формируется аналогично")
+        lines.append("       Банк подтверждает регистрацию контракта своей подписью")
         lines.append("")
-        lines.append("3. Шифрование и сохранение (ГОСТ 34.12‑2018, режим CTR)")
-        sc_enc = sc.get("payload_enc")
-        sc_iv = sc.get("payload_iv")
-        if sc_enc and sc_iv:
-            lines.append(f"  Вектор инициализации IV (16 байт): {sc_iv.hex()}")
-            lines.append("  Ядро контракта сериализуется в JSON и шифруется блочным шифром «Кузнечик» в режиме CTR.")
-            lines.append(f"  Длина шифротекста payload_enc: {len(sc_enc)} байт")
-            lines.append(f"  Первые байты payload_enc (hex): {sc_enc.hex()[:64]}...")
-        else:
-            lines.append("  Зашифрованный payload смарт‑контракта недоступен (отсутствуют поля payload_enc/payload_iv).")
+        lines.append("ЭТАП 3: РЕГИСТРАЦИЯ СМАРТ‑КОНТРАКТА")
+        lines.append("  Смарт-контракт регистрируется в системе со статусом SCHEDULED")
+        lines.append("  Устанавливается следующее время исполнения (next_execution)")
         lines.append("")
-        lines.append("4. Исполнение смарт‑контракта (техническая последовательность)")
-        lines.append("  • ядро контракта расшифровывается из payload_enc/payload_iv и восстанавливается contract_core;")
-        lines.append("  • проверяется достаточность digital_balance плательщика и статус/расписание контракта;")
-        lines.append("  • по параметрам contract_core формируется транзакция типа CONTRACT и пропускается через _finalize_transaction;")
-        lines.append("  • в этом процессе создаётся запись в transactions, формируется блок, считается Merkle‑корень и подпись ЦБ,")
-        lines.append("    а статус контракта обновляется на EXECUTED или FAILED с записью в failed_transactions при ошибках.")
+        lines.append("ЭТАП 4: ИСПОЛНЕНИЕ СМАРТ‑КОНТРАКТА")
+        lines.append("  Процесс исполнения:")
+        lines.append("    1. Выбор контрактов, подлежащих исполнению:")
+        lines.append("       • Проверка расписания (next_execution <= текущее время)")
+        lines.append("       • Проверка статуса контракта (SCHEDULED)")
+        lines.append("    2. Проверка условий:")
+        lines.append("       • Проверка достаточности digital_balance плательщика")
+        lines.append("       • Проверка срока действия контракта")
+        lines.append("    3. Формирование транзакции типа CONTRACT:")
+        lines.append("       • Создание транзакции с параметрами контракта")
+        lines.append("       • Обработка через _finalize_transaction")
+        lines.append("    4. Обновление статуса контракта:")
+        lines.append("       • При успехе: статус EXECUTED, обновление next_execution")
+        lines.append("       • При ошибке: статус FAILED, ошибка регистрируется в системе")
         last_tx_id = sc.get("last_tx_id")
         if last_tx_id:
             block_row = self.platform.db.execute(
@@ -962,10 +1061,9 @@ class DigitalRubleApp(tk.Tk):
             lines.append("5. Связь смарт‑контракта с блоками реестра")
             lines.append(f"  Последняя транзакция исполнения (tx_id): {last_tx_id}")
             if block_row:
-                lines.append(
-                    f"  Эта транзакция включена в блок #{block_row['height']} с хэшем {block_row['hash']} "
-                    "через таблицу block_transactions."
-                )
+                lines.append(f"  Транзакция включена в блок #{block_row['height']}")
+                lines.append(f"    Хеш блока: {block_row['hash']}")
+                lines.append("    Связь транзакции с блоком устанавливается через block_transactions")
             else:
                 lines.append("  Для данной транзакции исполнения ещё не найден связанный блок в главном реестре.")
         export_payload = {
@@ -983,12 +1081,8 @@ class DigitalRubleApp(tk.Tk):
         self._show_steps_window(
             "Этапы работы смарт‑контракта",
             lines,
-            export_handler=lambda: self._export_encrypted_json(
-                f"contract_{contract_id}.enc", export_payload, sc["bank_id"]
-            ),
-            export_plain_handler=lambda: self._export_plain_json(
-                f"contract_{contract_id}.json", export_payload
-            ),
+            export_handler=None,
+            export_plain_handler=None,
         )
 
     def _on_block_row_double_click(self, event) -> None:
@@ -1022,57 +1116,128 @@ class DigitalRubleApp(tk.Tk):
             (height,),
             fetchall=True,
         ) or []
-        txs = [self.platform._decrypt_transaction_row(dict(r)) for r in tx_rows]
+        txs = [dict(r) for r in tx_rows]
         events = self.platform.consensus.get_recent_events(limit=200)
         events_for_block = [e for e in events if e.block_hash == block_hash]
         lines: list[str] = []
-        lines.append(f"Блок #{block['height']} ({block_hash})")
+        lines.append(f"Жизненный цикл блока #{block['height']}")
+        lines.append("=" * 60)
         lines.append("")
-        lines.append("1. Подбор транзакций в блок")
+        lines.append("ЭТАП 1: ПОДБОР ТРАНЗАКЦИЙ В БЛОК")
         lines.append(f"  Количество транзакций: {len(txs)}")
-        for t in txs:
-            lines.append(
-                f"    • TX {t['id']} | тип={t['tx_type']} | сумма={t['amount']:.2f} | банк_id={t['bank_id']}"
-            )
-        lines.append("")
-        lines.append("2. Структура блока и Merkle‑дерево")
-        lines.append(f"  previous_hash: {block['previous_hash']}")
-        lines.append(f"  merkle_root: {block['merkle_root']}")
-        lines.append(f"  timestamp: {block['timestamp']}")
-        lines.append(f"  nonce: {block['nonce']}")
+        lines.append("  Процесс подбора:")
+        lines.append("    • Система собирает все транзакции со статусом CONFIRMED")
+        lines.append("    • Транзакции упорядочиваются по времени создания")
+        lines.append("    • Отбираются транзакции, ещё не включённые в блоки")
         if txs:
-            lines.append("  Построение Merkle‑дерева (формально):")
-            lines.append("    • обозначим через h_i = H(tx_hash_i) хэш i‑й транзакции блока;")
-            lines.append("    • на каждом уровне k берём пары (h_{k,2j-1}, h_{k,2j}) и считаем h_{k+1,j} = H(h_{k,2j-1} || h_{k,2j});")
-            lines.append("    • при нечётном числе элементов последний хэш дублируется: h_{k,2m} = h_{k,2m-1};")
-            lines.append("    • корневой хэш merkle_root = h_{L,1}, где L — номер последнего уровня дерева.")
-        else:
-            lines.append("  Для пустого блока merkle_root может быть фиксированным значением или хэшем пустого списка.")
-        lines.append("")
-        lines.append("3. Подпись блока ЦБ и сохранение")
-        lines.append(f"  Подписант (signer): {block['signer']}")
-        lines.append("  Сигнатура блока cbr_sig хранится в связанных записях transactions и вычисляется как подпись хэша блока.")
-        lines.append("  Сам блок сохраняется в таблице blocks, а связи блок ↔ транзакции — в таблице block_transactions (поля block_id, tx_id).")
-        lines.append("")
-        lines.append("4. Консенсус (RAFT) и распределённое голосование")
-        lines.append("  В модели лидер консенсуса фиксирован и всегда соответствует Центральному банку РФ (ЦБ РФ).")
-        lines.append("  В таблице consensus_events для каждого шага хранятся: actor (узел), state, event, block_hash, created_at.")
-        lines.append("  Этапы для одной записи блока:")
-        lines.append("    1) Запрос на подтверждение: ЦБ формирует предложение AppendEntries и рассылает его ФО;")
-        lines.append("    2) Голосование: ФО возвращают ответы (VOTE_GRANTED / REPLICATION) о согласии применить запись;")
-        lines.append("    3) Рассылка результата: ЦБ фиксирует достижение кворума и уведомляет узлы о принятии записи;")
-        lines.append("    4) Сохранение: запись помечается как COMMITTED и ENTRY_APPLIED в каждом узле.")
-        if events_for_block:
-            for e in events_for_block:
+            lines.append("  Включённые транзакции:")
+            for t in txs[:10]:  # Показываем первые 10
                 lines.append(
-                    f"  [{e.created_at}] {e.actor}: {self._translate_consensus_state(e.state)} — {e.event}"
+                    f"    • TX {t['id']} | тип={t['tx_type']} | сумма={t['amount']:.2f} | банк_id={t['bank_id']}"
                 )
+            if len(txs) > 10:
+                lines.append(f"    ... и ещё {len(txs) - 10} транзакций")
         else:
-            lines.append("  Для этого блока ещё нет событий в таблице consensus_events.")
+            lines.append("  Блок пустой (genesis блок или блок без транзакций)")
         lines.append("")
-        lines.append("5. Репликация в локальные реестры ФО")
-        lines.append("  Центральный банк РФ (главный реестр): блок присутствует.")
-        lines.append("  Блок также хранится во всех ФО, через которые прошли входящие в него транзакции (перечислены ниже).")
+        lines.append("ЭТАП 2: ФОРМИРОВАНИЕ СТРУКТУРЫ БЛОКА")
+        lines.append("  Заголовок блока содержит:")
+        lines.append(f"    • height (высота): {block['height']}")
+        lines.append(f"    • previous_hash: {block['previous_hash']}")
+        lines.append(f"    • timestamp: {block['timestamp']}")
+        lines.append(f"    • nonce: {block['nonce']}")
+        lines.append(f"    • signer (подписант): {block['signer']}")
+        lines.append("")
+        lines.append("ЭТАП 3: ВЫЧИСЛЕНИЕ MERKLE-КОРНЯ")
+        lines.append("  Заголовок блока содержит:")
+        lines.append(f"    • height (высота): {block['height']}")
+        lines.append(f"    • previous_hash: {block['previous_hash']}")
+        lines.append(f"    • timestamp: {block['timestamp']}")
+        lines.append(f"    • nonce: {block['nonce']}")
+        lines.append(f"    • signer (подписант): {block['signer']}")
+        lines.append("")
+        lines.append("ЭТАП 3: ВЫЧИСЛЕНИЕ MERKLE-КОРНЯ")
+        lines.append(f"  merkle_root: {block['merkle_root']}")
+        if txs:
+            lines.append("  Алгоритм построения Merkle-дерева:")
+            lines.append("    • Обозначим через h_i = Streebog-256(tx_hash_i) хэш i-й транзакции блока")
+            lines.append("    • На каждом уровне k берём пары (h_{k,2j-1}, h_{k,2j})")
+            lines.append("    • Вычисляем h_{k+1,j} = Streebog-256(h_{k,2j-1} || h_{k,2j})")
+            lines.append("    • При нечётном числе элементов последний хэш дублируется: h_{k,2m} = h_{k,2m-1}")
+            lines.append("    • Корневой хэш merkle_root = h_{L,1}, где L — номер последнего уровня дерева")
+            lines.append("  Математическая запись:")
+            lines.append("    h_i = Streebog-256(tx_hash_i) для i = 1, 2, ..., n")
+            lines.append("    h_{k+1,j} = Streebog-256(h_{k,2j-1} || h_{k,2j}) для j = 1, 2, ..., ⌈n/2⌉")
+            lines.append("    merkle_root = h_{L,1}")
+        else:
+            lines.append("  Для пустого блока merkle_root вычисляется как хэш пустого списка")
+        lines.append("")
+        lines.append("ЭТАП 4: ВЫЧИСЛЕНИЕ ХЕША БЛОКА")
+        lines.append(f"  hash блока: {block_hash}")
+        lines.append("  Хеш вычисляется по алгоритму Streebog-256:")
+        lines.append("    hash = Streebog-256({height, timestamp, previous_hash, signer, nonce, merkle_root, tx_hashes})")
+        lines.append("  Взаимосвязь блоков по хешу:")
+        lines.append(f"    • previous_hash = {block['previous_hash']}")
+        lines.append("    • Каждый блок связан с предыдущим через previous_hash")
+        lines.append("    • Формируется цепочка блоков (blockchain)")
+        lines.append("  Восстановление блоков:")
+        lines.append("    • get_block_by_hash(hash) - восстановление блока по хешу")
+        lines.append("    • get_block_by_previous_hash(previous_hash) - восстановление следующего блока")
+        lines.append("    • restore_chain_from_hash(start_hash) - восстановление цепочки блоков")
+        lines.append("")
+        lines.append("ЭТАП 5: ЭЛЕКТРОННАЯ ЦИФРОВАЯ ПОДПИСЬ БЛОКА ЦБ")
+        lines.append(f"  Подписант (signer): {block['signer']}")
+        lines.append("  Процесс подписания:")
+        lines.append("    1. Вычисляется хеш блока: H_block = Streebog-256(block_header)")
+        lines.append("    2. ЦБ формирует ЭЦП по ГОСТ 34.10-2018:")
+        lines.append("       • Генерируется случайное число k ∈ [1, q-1]")
+        lines.append("       • Вычисляется точка эллиптической кривой: C = k * P")
+        lines.append("       • Вычисляется r = Cx mod q")
+        lines.append("       • Вычисляется s = (r * d_cbr + k * H_block) mod q")
+        lines.append("       • ЭЦП блока = (r, s)")
+        lines.append("    3. ЭЦП блока сохраняется в связанных транзакциях (cbr_sig)")
+        lines.append("  Электронная цифровая подпись подтверждает:")
+        lines.append("    • Подлинность блока")
+        lines.append("    • Целостность данных блока")
+        lines.append("    • Авторизацию ЦБ как создателя блока")
+        lines.append("")
+        lines.append("ЭТАП 6: КОНСЕНСУС (RAFT) И РАСПРЕДЕЛЁННОЕ ГОЛОСОВАНИЕ")
+        lines.append("  Лидер консенсуса: Центральный банк РФ (ЦБ РФ)")
+        lines.append("  Этапы консенсуса для блока:")
+        lines.append("    1. Запрос на подтверждение:")
+        lines.append("       • ЦБ формирует предложение AppendEntries с данными блока")
+        lines.append("       • Предложение рассылается всем узлам (ФО)")
+        lines.append("    2. Голосование:")
+        lines.append("       • Каждый узел (ФО) проверяет валидность блока")
+        lines.append("       • Узлы возвращают ответы: VOTE_GRANTED (согласие) или REPLICATION (репликация)")
+        lines.append("    3. Фиксация кворума:")
+        lines.append("       • ЦБ подсчитывает количество положительных ответов")
+        lines.append("       • При достижении кворума (большинство узлов) блок считается принятым")
+        lines.append("    4. Сохранение:")
+        lines.append("       • Запись помечается как COMMITTED в таблице consensus_events")
+        lines.append("       • Каждый узел применяет запись: ENTRY_APPLIED")
+        if events_for_block:
+            lines.append("  События консенсуса для этого блока:")
+            for e in events_for_block[:10]:  # Показываем первые 10
+                lines.append(
+                    f"    [{e.created_at}] {e.actor}: {self._translate_consensus_state(e.state)} — {e.event}"
+                )
+            if len(events_for_block) > 10:
+                lines.append(f"    ... и ещё {len(events_for_block) - 10} событий")
+        else:
+            lines.append("  Для этого блока ещё нет событий в таблице consensus_events")
+        lines.append("")
+        lines.append("ЭТАП 7: ПОЛНАЯ РЕПЛИКАЦИЯ НА ВСЕ УЗЛЫ")
+        lines.append("  Центральный банк РФ (главный реестр): блок присутствует ✓")
+        lines.append("  Полная репликация: блок хранится на ВСЕХ узлах (ФО) независимо от транзакций")
+        lines.append("  Процесс репликации:")
+        lines.append("    1. ЦБ отправляет блок и все его транзакции на каждый узел")
+        lines.append("    2. Каждый узел проверяет валидность блока")
+        lines.append("    3. Узел сохраняет блок в локальную БД (bank_*.db)")
+        lines.append("    4. Узел сохраняет все транзакции блока в локальную БД")
+        lines.append("    5. Узел создаёт связи block_transactions в локальной БД")
+        lines.append("  Статус репликации:")
+        lines.append("    При полной репликации каждый блок присутствует на ВСЕХ узлах (ФО)")
         for bank in self.platform.list_banks():
             from database import DatabaseManager
             bank_db = DatabaseManager(f"bank_{bank['id']}.db")
@@ -1082,7 +1247,30 @@ class DigitalRubleApp(tk.Tk):
                 fetchone=True,
             )
             if lb:
-                lines.append(f"  Блок присутствует в узле {bank['name']} (bank_{bank['id']}.db).")
+                tx_count = bank_db.execute(
+                    """
+                    SELECT COUNT(*) as cnt FROM transactions t
+                    JOIN block_transactions bt ON bt.tx_id = t.id
+                    JOIN blocks b ON b.id = bt.block_id
+                    WHERE b.height = ?
+                    """,
+                    (height,),
+                    fetchone=True
+                )
+                lines.append(f"    ✓ Блок присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+                if tx_count:
+                    lines.append(f"      Транзакций в блоке: {tx_count['cnt']}")
+            else:
+                # Если блок отсутствует, это временная ситуация - при полной репликации он будет присутствовать
+                lines.append(f"    ⚠ Блок временно отсутствует в узле {bank['name']} (ожидает репликации)")
+                lines.append(f"      Примечание: При полной репликации блок будет присутствовать на всех узлах")
+        lines.append("")
+        lines.append("ЭТАП 8: ФИНАЛИЗАЦИЯ БЛОКА")
+        lines.append("  Блок считается финализированным после:")
+        lines.append("    • Включения в главный реестр (центральная БД)")
+        lines.append("    • Подтверждения консенсусом (RAFT)")
+        lines.append("    • Полной репликации на все узлы сети")
+        lines.append("    • Создания связей block_transactions во всех узлах")
         export_payload = {
             "type": "block",
             "height": block["height"],
@@ -1096,15 +1284,8 @@ class DigitalRubleApp(tk.Tk):
         self._show_steps_window(
             "Этапы формирования и репликации блока",
             lines,
-            export_handler=lambda: self._export_encrypted_json(
-                f"block_{block['height']}.enc",
-                export_payload,
-                None,
-            ),
-            export_plain_handler=lambda: self._export_plain_json(
-                f"block_{block['height']}.json",
-                export_payload,
-            ),
+            export_handler=None,
+            export_plain_handler=None,
         )
 
     def _on_utxo_row_double_click(self, event) -> None:
@@ -1178,15 +1359,8 @@ class DigitalRubleApp(tk.Tk):
         self._show_steps_window(
             "Этапы формирования и использования UTXO",
             lines,
-            export_handler=lambda: self._export_encrypted_json(
-                f"utxo_{u['id']}.enc",
-                export_payload,
-                bank_id,
-            ),
-            export_plain_handler=lambda: self._export_plain_json(
-                f"utxo_{u['id']}.json",
-                export_payload,
-            ),
+            export_handler=None,
+            export_plain_handler=None,
         )
 
 

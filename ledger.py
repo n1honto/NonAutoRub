@@ -203,6 +203,44 @@ class DistributedLedger:
         )
         return [row["hash"] for row in rows]
 
+    def get_block_by_hash(self, block_hash: str) -> dict:
+        """Получить блок по его хешу"""
+        row = self.db.execute(
+            "SELECT * FROM blocks WHERE hash = ?",
+            (block_hash,),
+            fetchone=True,
+        )
+        if not row:
+            return None
+        return dict(row)
+
+    def get_block_by_previous_hash(self, previous_hash: str) -> dict:
+        """Получить блок по хешу предыдущего блока (восстановление цепочки)"""
+        row = self.db.execute(
+            "SELECT * FROM blocks WHERE previous_hash = ? ORDER BY height ASC LIMIT 1",
+            (previous_hash,),
+            fetchone=True,
+        )
+        if not row:
+            return None
+        return dict(row)
+
+    def restore_chain_from_hash(self, start_hash: str) -> List[dict]:
+        """Восстановить цепочку блоков начиная с указанного хеша"""
+        chain = []
+        current_hash = start_hash
+        while current_hash:
+            block = self.get_block_by_previous_hash(current_hash)
+            if not block:
+                # Пытаемся найти блок с таким хешем
+                block = self.get_block_by_hash(current_hash)
+                if block:
+                    chain.append(block)
+                break
+            chain.append(block)
+            current_hash = block["hash"]
+        return chain
+
 
 def _proof_of_authority_nonce(height: int, previous_hash: str) -> int:
     """Deterministic nonce to mimic PoA signing."""
