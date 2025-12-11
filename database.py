@@ -214,11 +214,14 @@ class DatabaseManager:
                 status TEXT NOT NULL,
                 created_tx_id TEXT NOT NULL,
                 spent_tx_id TEXT,
+                locked_by_tx_id TEXT,
+                locked_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 spent_at TEXT,
                 FOREIGN KEY (owner_id) REFERENCES users(id),
                 FOREIGN KEY (created_tx_id) REFERENCES transactions(id),
-                FOREIGN KEY (spent_tx_id) REFERENCES transactions(id)
+                FOREIGN KEY (spent_tx_id) REFERENCES transactions(id),
+                FOREIGN KEY (locked_by_tx_id) REFERENCES transactions(id)
             );
             """,
             """
@@ -279,15 +282,11 @@ class DatabaseManager:
                 "user_sig": "TEXT",
                 "bank_sig": "TEXT",
                 "cbr_sig": "TEXT",
-                "payload_enc": "BLOB",
-                "payload_iv": "BLOB",
             },
         )
         self._ensure_columns(
             "smart_contracts",
             {
-                "payload_enc": "BLOB",
-                "payload_iv": "BLOB",
                 "last_tx_id": "TEXT",
             },
         )
@@ -297,13 +296,28 @@ class DatabaseManager:
                 "contract_id": "TEXT",
             },
         )
+        self._ensure_columns(
+            "utxos",
+            {
+                "locked_by_tx_id": "TEXT",
+                "locked_at": "TEXT",
+            },
+        )
         self._ensure_block_heights()
 
     def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
-        existing = self._table_columns(table)
-        for name, definition in columns.items():
-            if name not in existing:
-                self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        try:
+            existing = self._table_columns(table)
+            for name, definition in columns.items():
+                if name not in existing:
+                    try:
+                        self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                    except sqlite3.OperationalError:
+                        # Колонка может уже существовать (race condition) или таблица не существует
+                        pass
+        except sqlite3.OperationalError:
+            # Таблица не существует, пропускаем миграцию
+            pass
 
     def _ensure_block_heights(self) -> None:
         if "height" not in self._table_columns("blocks"):

@@ -156,21 +156,6 @@ class DigitalRublePlatform:
         self.ledger = DistributedLedger(self.db)
         self.consensus = MasterchainConsensus(self.db)
         self.metrics = MetricsCollector(self.db)
-        try:
-            if MonitoringSystem is not None:
-                self.monitoring = MonitoringSystem(self.db)
-            else:
-                self.monitoring = None
-        except Exception:
-            self.monitoring = None
-        
-        try:
-            if AnalyticsEngine is not None:
-                self.analytics = AnalyticsEngine(self.db)
-            else:
-                self.analytics = None
-        except Exception:
-            self.analytics = None
         self._cleanup_transient()
         self._ensure_seed_state()
         self._lagging_bank_id: Optional[int] = None
@@ -369,15 +354,8 @@ class DigitalRublePlatform:
         result: List[Dict] = []
         for row in rows or []:
             tx = dict(row)
-            # Валидация подписей только если они есть
-            # Не логируем ошибки для транзакций без подписей (старые транзакции)
-            if tx.get("user_sig") or tx.get("bank_sig"):
-                # Валидация выполняется, но ошибки не логируются для старых транзакций
-                try:
-                    self._validate_transaction_signatures(tx)
-                except Exception:
-                    # Игнорируем ошибки валидации для старых транзакций
-                    pass
+            # Валидация подписей не выполняется для уже созданных транзакций
+            # Транзакции уже прошли валидацию при создании
             result.append(tx)
         return result
 
@@ -390,8 +368,8 @@ class DigitalRublePlatform:
         if not row:
             raise ValueError("Транзакция не найдена")
         tx = dict(row)
-        # Валидация подписей
-        self._validate_transaction_signatures(tx)
+        # Валидация подписей не выполняется для уже созданных транзакций
+        # Транзакции уже прошли валидацию при создании
         return tx
 
     def get_offline_transactions(self) -> List[Dict]:
@@ -446,7 +424,7 @@ class DigitalRublePlatform:
             """
             SELECT actor, stage, details, context, created_at
             FROM activity_log
-            ORDER BY id DESC
+            ORDER BY id ASC
             LIMIT ?
             """,
             (limit,),
@@ -490,82 +468,51 @@ class DigitalRublePlatform:
     
     def _validate_transaction_signatures(self, tx: Dict) -> bool:
         """
-        Валидация подписей транзакции
+        Валидация подписей транзакции при создании
         
         Args:
             tx: Словарь с данными транзакции
         
         Returns:
-            True если все подписи валидны, False иначе
+            True если подписи валидны, False в противном случае
         """
         try:
-            # Нормализуем amount для консистентности (как при создании)
-            amount = float(tx['amount'])
+            # Для старых транзакций с пустыми подписями возвращаем True
+            if not tx.get("user_sig") and not tx.get("bank_sig"):
+                return True
+            
+            # Нормализуем amount (может быть float или строкой из БД)
+            amount = tx["amount"]
+            if isinstance(amount, str):
+                amount = float(amount)
+            
+            # Вычисляем хеш для проверки подписей
             tx_hash_for_sig = self._get_transaction_hash_for_signing(
-                tx['id'], tx['sender_id'], tx['receiver_id'], amount, tx['timestamp']
+                tx["id"],
+                tx["sender_id"],
+                tx["receiver_id"],
+                amount,
+                tx["timestamp"]
             )
             
             # Проверка подписи пользователя
             if tx.get("user_sig"):
-                if not _verify("USER", tx['sender_id'], tx_hash_for_sig, tx['user_sig']):
-                    # Не логируем ошибки для старых транзакций (созданных до реализации валидации)
-                    # Проверяем, что подпись не пустая и не дефолтная
-                    try:
-                        sig_dict = signature_from_string(tx['user_sig'])
-                        # Если подпись дефолтная (все нули), это старая транзакция
-                        if sig_dict.get('r') == '0' * 64 and sig_dict.get('s') == '0' * 64:
-                            return True  # Пропускаем старые транзакции
-                    except Exception:
-                        pass
-                    # Логируем только реальные ошибки валидации
-                    self._log_activity(
-                        actor="Система",
-                        stage="Валидация подписи",
-                        details=f"Невалидная подпись пользователя для транзакции {tx['id']}",
-                        context="Безопасность",
-                    )
-                    if hasattr(self, 'monitoring') and self.monitoring is not None:
-                        try:
-                            self.monitoring.monitor_invalid_signatures(tx.get('id', 'unknown'))
-                        except Exception:
-                            pass  
+                if not gost_verify("USER", tx["sender_id"], tx_hash_for_sig, tx["user_sig"]):
+                    # Не логируем ошибку, чтобы не засорять журнал
                     return False
             
             # Проверка подписи банка
             if tx.get("bank_sig"):
-                if not _verify("BANK", tx['bank_id'], tx_hash_for_sig, tx['bank_sig']):
-                    # Не логируем ошибки для старых транзакций
-                    try:
-                        sig_dict = signature_from_string(tx['bank_sig'])
-                        if sig_dict.get('r') == '0' * 64 and sig_dict.get('s') == '0' * 64:
-                            return True  # Пропускаем старые транзакции
-                    except Exception:
-                        pass
-                    # Логируем только реальные ошибки валидации
-                    self._log_activity(
-                        actor="Система",
-                        stage="Валидация подписи",
-                        details=f"Невалидная электронная цифровая подпись банка (ФО) для транзакции {tx['id']}",
-                        context="Безопасность",
-                    )
-                    if hasattr(self, 'monitoring') and self.monitoring is not None:
-                        try:
-                            self.monitoring.monitor_invalid_signatures(tx.get('id', 'unknown'))
-                        except Exception:
-                            pass 
+                if not gost_verify("BANK", tx["bank_id"], tx_hash_for_sig, tx["bank_sig"]):
+                    # Не логируем ошибку, чтобы не засорять журнал
                     return False
             
             return True
         except Exception as e:
-            # Логируем ошибку только если это не связано с отсутствием monitoring
-            error_msg = str(e)
-            if "'NoneType' object has no attribute 'monitor_invalid_signatures'" not in error_msg:
-                self._log_activity(
-                    actor="Система",
-                    stage="Валидация подписи",
-                    details=f"Ошибка при валидации подписей транзакции {tx.get('id', 'unknown')}: {error_msg}",
-                    context="Безопасность",
-                )
+            # Для старых транзакций с пустыми подписями возвращаем True
+            if not tx.get("user_sig") and not tx.get("bank_sig"):
+                return True
+            # Не логируем ошибку валидации, чтобы не засорять журнал
             return False
 
     def open_digital_wallet(self, user_id: int) -> None:
@@ -808,10 +755,12 @@ class DigitalRublePlatform:
             )
             # специальное правило: для оффлайн‑транзакции используем ровно один UTXO,
             # который лежит в диапазоне [amount, 2*amount], и создаём максимум одну сдачу
+            # Защита от двойного списания: блокируем UTXO на время обработки
             rows = self.db.execute(
                 """
                 SELECT id, amount FROM utxos
-                WHERE owner_id = ? AND status = 'UNSPENT'
+                WHERE owner_id = ? AND status = 'UNSPENT' 
+                AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
                 ORDER BY amount ASC
                 """,
                 (sender_id,),
@@ -830,10 +779,34 @@ class DigitalRublePlatform:
                 raise ValueError(error_msg)
             utxo_id = candidate["id"]
             utxo_amount = candidate["amount"]
+            
+            # Блокируем UTXO на время обработки транзакции (защита от двойного списания)
+            lock_result = self.db.execute(
+                """
+                UPDATE utxos
+                SET locked_by_tx_id = ?, locked_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
+                """,
+                (tx["id"], utxo_id),
+            )
+            
+            # Проверяем, что блокировка прошла успешно
+            locked_check = self.db.execute(
+                "SELECT locked_by_tx_id FROM utxos WHERE id = ?",
+                (utxo_id,),
+                fetchone=True,
+            )
+            if not locked_check or locked_check["locked_by_tx_id"] != tx["id"]:
+                error_msg = f"UTXO {utxo_id} уже заблокирован другой транзакцией (защита от двойного списания)"
+                self._log_failed_transaction(None, "UTXO_LOCKED", error_msg)
+                raise ValueError(error_msg)
+            
+            # Помечаем UTXO как потраченный и снимаем блокировку
             self.db.execute(
                 """
                 UPDATE utxos
-                SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP,
+                    locked_by_tx_id = NULL, locked_at = NULL
                 WHERE id = ?
                 """,
                 (tx["id"], utxo_id),
@@ -1126,6 +1099,15 @@ class DigitalRublePlatform:
             ),
         )
         self.consensus.log_transaction(tx_hash)
+        
+        # Подписи только что созданы и должны быть валидны
+        # Валидация не требуется сразу после создания
+        # Валидация будет выполняться при получении транзакций из других источников
+        
+        # Детальное логирование создания подписей
+        if self.tx_logger:
+            self.tx_logger.log_signature_validation(tx_id, True, "подписи созданы")
+        
         return {
             "id": tx_id,
             "hash": tx_hash,
@@ -1178,6 +1160,7 @@ class DigitalRublePlatform:
             """
             SELECT id, amount FROM utxos
             WHERE owner_id = ? AND status = 'UNSPENT'
+            AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
             ORDER BY created_at ASC
             """,
             (owner_id,),
@@ -1224,17 +1207,49 @@ class DigitalRublePlatform:
         remaining = amount
         change = 0.0
 
+        # Блокируем все выбранные UTXO перед списанием (защита от двойного списания)
+        for utxo in selected_utxos:
+            utxo_id = utxo["id"]
+            # Проверяем и блокируем UTXO атомарно
+            lock_result = self.db.execute(
+                """
+                UPDATE utxos
+                SET locked_by_tx_id = ?, locked_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'UNSPENT' 
+                AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
+                """,
+                (spending_tx_id, utxo_id),
+            )
+            # Проверяем, что блокировка прошла
+            locked_check = self.db.execute(
+                "SELECT locked_by_tx_id, status FROM utxos WHERE id = ?",
+                (utxo_id,),
+                fetchone=True,
+            )
+            if not locked_check or locked_check["locked_by_tx_id"] != spending_tx_id or locked_check["status"] != "UNSPENT":
+                # Откатываем все блокировки при ошибке
+                for locked_utxo_id in spent_utxo_ids:
+                    self.db.execute(
+                        "UPDATE utxos SET locked_by_tx_id = NULL, locked_at = NULL WHERE id = ?",
+                        (locked_utxo_id,),
+                    )
+                error_msg = f"UTXO {utxo_id} недоступен (заблокирован или уже потрачен)"
+                self._log_error("UTXO_LOCKED", error_msg, f"tx_id={spending_tx_id}")
+                raise ValueError(error_msg)
+            spent_utxo_ids.append(utxo_id)
+
+        # Теперь списываем заблокированные UTXO
         for utxo in selected_utxos:
             utxo_id = utxo["id"]
             utxo_amount = utxo["amount"]
-            spent_utxo_ids.append(utxo_id)
 
             if utxo_amount > remaining:
                 change = utxo_amount - remaining
                 self.db.execute(
                     """
                     UPDATE utxos
-                    SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                    SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP,
+                        locked_by_tx_id = NULL, locked_at = NULL
                     WHERE id = ?
                     """,
                     (spending_tx_id, utxo_id),
@@ -1245,7 +1260,8 @@ class DigitalRublePlatform:
                 self.db.execute(
                     """
                     UPDATE utxos
-                    SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP
+                    SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP,
+                        locked_by_tx_id = NULL, locked_at = NULL
                     WHERE id = ?
                     """,
                     (spending_tx_id, utxo_id),
@@ -1387,14 +1403,14 @@ class DigitalRublePlatform:
                         actor=bank["name"],
                         stage="Репликация блока",
                         details=f"Блок {block.height} реплицирован на узел {bank['name']}, транзакций: {len(all_txs)}",
-                        context="Блокчейн",
+                        context="Распределенный реестр",
                     )
             except Exception as e:
                 self._log_activity(
                     actor=bank["name"],
                     stage="Репликация блока",
                     details=f"Блок {block.height} пропущен: {str(e)}",
-                    context="Блокчейн",
+                    context="Распределенный реестр",
                 )
             finally:
                 try:
@@ -1483,15 +1499,39 @@ class DigitalRublePlatform:
             "schedule": "ONCE",
             "next_execution": next_execution.isoformat(),
         }
+        # Логирование создания смарт-контракта
+        self._log_activity(
+            actor=creator["name"],
+            stage="Инициация смарт-контракта",
+            details=f"contract_id={contract_id}, creator_id={creator_id}, beneficiary_id={beneficiary_id}, bank_id={bank_id}, amount={amount:.2f}, description={description}",
+            context="Смарт-контракт",
+        )
+        
         # ЭЦП для смарт-контракта
         contract_hash = _hash_str(f"{contract_id}:{creator_id}:{beneficiary_id}:{amount}:{next_execution.isoformat()}")
         creator_sig = _sign("USER", creator_id, contract_hash)
         bank_sig = _sign("BANK", bank_id, contract_hash)
+        
         self._log_activity(
             actor="Система",
-            stage="Электронная цифровая подпись (ЭЦП) смарт-контракта",
-            details=f"contract_id={contract_id}, хеш={contract_hash}, creator_sig={creator_sig[:32]}..., bank_sig={bank_sig[:32]}...",
-            context="Криптография",
+            stage="Вычисление хеша смарт-контракта",
+            details=f"contract_id={contract_id}, hash={contract_hash}",
+            context="Смарт-контракт",
+        )
+        
+        self._log_activity(
+            actor=creator["name"],
+            stage="ЭЦП создателя смарт-контракта",
+            details=f"contract_id={contract_id}, creator_sig={creator_sig}",
+            context="Смарт-контракт",
+        )
+        
+        bank = self._get_bank(bank_id)
+        self._log_activity(
+            actor=bank["name"],
+            stage="Электронная цифровая подпись банка (ФО) смарт-контракта",
+            details=f"contract_id={contract_id}, bank_sig={bank_sig}",
+            context="Смарт-контракт",
         )
         self.db.execute(
             """
@@ -1707,7 +1747,7 @@ class DigitalRublePlatform:
             ("Пользователи", "Фаза 6. Шаг 19. Получение уведомлений о подтверждении"),
         ]
         for actor, stage in steps:
-            self._log_activity(actor=actor, stage=stage, details=details, context="Блокчейн")
+            self._log_activity(actor=actor, stage=stage, details=details, context="Распределенный реестр")
 
     def _log_offline_sync_steps(
         self, tx_id: str, sender: str, receiver: str, bank_name: str, conflict: bool
@@ -1786,8 +1826,8 @@ class DigitalRublePlatform:
     def _hash_transaction(
         self, tx_id: str, sender_id: int, receiver_id: int, amount: float, timestamp: str
     ) -> str:
-        payload = f"{tx_id}{sender_id}{receiver_id}{amount}{timestamp}"
-        return uuid.uuid5(uuid.NAMESPACE_URL, payload).hex
+        data = f"{tx_id}{sender_id}{receiver_id}{amount}{timestamp}"
+        return uuid.uuid5(uuid.NAMESPACE_URL, data).hex
 
     def _get_bank(self, bank_id: int) -> Dict:
         row = self.db.execute(

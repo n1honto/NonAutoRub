@@ -20,12 +20,23 @@ class DigitalRubleApp(tk.Tk):
         self.option_add("*Font", default_font)
         heading_font = tkfont.nametofont("TkHeadingFont")
         heading_font.configure(size=12, weight="bold")
-        self.platform = DigitalRublePlatform()
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        self._init_state()
-        self._build_tabs()
-        self.refresh_all()
+        try:
+            self.platform = DigitalRublePlatform()
+            self.notebook = ttk.Notebook(self)
+            self.notebook.pack(fill=tk.BOTH, expand=True)
+            self._init_state()
+            self._build_tabs()
+            self.refresh_all()
+        except Exception as e:
+            # Обрабатываем ошибки при инициализации
+            import traceback
+            error_msg = f"Ошибка при инициализации приложения: {e}\n\n{traceback.format_exc()}"
+            print(error_msg)
+            try:
+                messagebox.showerror("Ошибка инициализации", error_msg)
+            except:
+                pass
+            raise
 
     def _init_state(self) -> None:
         self.user_table = None
@@ -65,6 +76,7 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_votes = None
         self._consensus_replications = None
         self._consensus_total_banks = None
+        self._consensus_active_nodes = set()  # Активные узлы на текущем этапе
         self._ledger_last_rows = []
         self._ledger_active_height = None
 
@@ -114,8 +126,9 @@ class DigitalRubleApp(tk.Tk):
         # Экспорт JSON отключен по требованию
 
     def _export_encrypted_json(self, default_name: str, payload: dict, bank_id: int | None) -> None:
-        # Шифрование больше не используется, функция оставлена для совместимости
-        messagebox.showinfo("Экспорт", "Шифрование отключено. Используйте экспорт открытого JSON.")
+        # Функция удалена - шифрование больше не используется
+        # Используйте _export_plain_json для экспорта
+        self._export_plain_json(default_name, payload)
 
     def _export_plain_json(self, default_name: str, payload: dict) -> None:
         try:
@@ -462,9 +475,33 @@ class DigitalRubleApp(tk.Tk):
             side=tk.LEFT, padx=5
         )
 
-        ttk.Label(tab, text="Журнал событий ЦБ и системы").grid(
-            row=3, column=0, sticky="w", padx=10, pady=5
+        # Панель управления журналом
+        log_control_frame = ttk.Frame(tab)
+        log_control_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        log_control_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(log_control_frame, text="Журнал событий ЦБ и системы").grid(
+            row=0, column=0, sticky="w"
         )
+        
+        # Фильтры
+        filter_frame = ttk.Frame(log_control_frame)
+        filter_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        
+        ttk.Label(filter_frame, text="Фильтр:").pack(side=tk.LEFT, padx=(0, 5))
+        self.cbr_filter_combo = ttk.Combobox(filter_frame, values=["Все", "Транзакции", "Смарт-контракты", "Эмиссия", "Блоки", "Консенсус"], state="readonly", width=15)
+        self.cbr_filter_combo.pack(side=tk.LEFT, padx=5)
+        self.cbr_filter_combo.set("Все")
+        self.cbr_filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_all())
+        
+        ttk.Label(filter_frame, text="Поиск:").pack(side=tk.LEFT, padx=(10, 5))
+        self.cbr_search_entry = ttk.Entry(filter_frame, width=20)
+        self.cbr_search_entry.pack(side=tk.LEFT, padx=5)
+        self.cbr_search_entry.bind("<KeyRelease>", lambda e: self.refresh_all())
+        
+        ttk.Button(filter_frame, text="Экспорт CSV", command=lambda: self._export_cbr_log_csv()).pack(side=tk.LEFT, padx=5)
+        ttk.Button(filter_frame, text="Экспорт JSON", command=lambda: self._export_cbr_log_json()).pack(side=tk.LEFT, padx=5)
+        
         self.cbr_log = tk.Text(tab, height=18)
         self.cbr_log.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
         tab.rowconfigure(4, weight=1)
@@ -618,9 +655,33 @@ class DigitalRubleApp(tk.Tk):
         tab.rowconfigure(1, weight=1)
         tab.columnconfigure(0, weight=1)
 
-        ttk.Label(tab, text="Журнал активности", font=("TkDefaultFont", 11, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(10, 5)
+        # Панель управления журналом
+        control_frame = ttk.Frame(tab)
+        control_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        control_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(control_frame, text="Журнал активности", font=("TkDefaultFont", 11, "bold")).grid(
+            row=0, column=0, sticky="w"
         )
+        
+        # Фильтры и поиск
+        filter_frame = ttk.Frame(control_frame)
+        filter_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        
+        ttk.Label(filter_frame, text="Фильтр:").pack(side=tk.LEFT, padx=(0, 5))
+        self.activity_filter_combo = ttk.Combobox(filter_frame, values=["Все", "Транзакции", "Смарт-контракты", "Эмиссия", "Блоки", "Консенсус"], state="readonly", width=15)
+        self.activity_filter_combo.pack(side=tk.LEFT, padx=5)
+        self.activity_filter_combo.set("Все")
+        self.activity_filter_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_all())
+        
+        ttk.Label(filter_frame, text="Поиск:").pack(side=tk.LEFT, padx=(10, 5))
+        self.activity_search_entry = ttk.Entry(filter_frame, width=20)
+        self.activity_search_entry.pack(side=tk.LEFT, padx=5)
+        self.activity_search_entry.bind("<KeyRelease>", lambda e: self.refresh_all())
+        
+        ttk.Button(filter_frame, text="Экспорт CSV", command=lambda: self._export_activity_log_csv()).pack(side=tk.LEFT, padx=5)
+        ttk.Button(filter_frame, text="Экспорт JSON", command=lambda: self._export_activity_log_json()).pack(side=tk.LEFT, padx=5)
+        
         container = ttk.Frame(tab)
         container.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         container.columnconfigure(0, weight=1)
@@ -688,7 +749,7 @@ class DigitalRubleApp(tk.Tk):
         lines.append(f"    H = Streebog-256(core)")
         lines.append(f"    tx.hash = {tx['hash']}")
         lines.append("  Хеш транзакции используется для:")
-        lines.append("    • идентификации транзакции в блокчейне")
+        lines.append("    • идентификации транзакции в распределенном реестре")
         lines.append("    • вычисления Merkle-корня блока")
         lines.append("    • связи блоков через previous_hash")
         lines.append("")
@@ -763,20 +824,12 @@ class DigitalRubleApp(tk.Tk):
             lines.append("    Транзакция находится в статусе CONFIRMED и ожидает включения в следующий блок.")
         lines.append("")
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
-        lines.append("  После включения в блок транзакция реплицируется на все узлы:")
-        banks = self.platform.list_banks()
-        for bank in banks:
-            from database import DatabaseManager
-            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
-            tx_exists = bank_db.execute(
-                "SELECT id FROM transactions WHERE id = ?",
-                (tx_id,),
-                fetchone=True
-            )
-            if tx_exists:
-                lines.append(f"    ✓ Транзакция присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
-            else:
-                lines.append(f"    ✗ Транзакция отсутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+        if block_row:
+            banks = self.platform.list_banks()
+            bank_names = ", ".join([bank['name'] for bank in banks])
+            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names} на все узлы сети")
+        else:
+            lines.append("  После включения транзакции в блок будет автоматическая репликация на все узлы сети")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Транзакция считается завершённой после:")
@@ -933,20 +986,12 @@ class DigitalRubleApp(tk.Tk):
             lines.append("  Транзакция ещё не включена в блок (ожидание обработки)")
         lines.append("")
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
-        lines.append("  После включения в блок транзакция реплицируется на все узлы")
-        banks = self.platform.list_banks()
-        for bank in banks:
-            from database import DatabaseManager
-            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
-            tx_exists = bank_db.execute(
-                "SELECT id FROM transactions WHERE id = ?",
-                (tx_id,),
-                fetchone=True
-            )
-            if tx_exists:
-                lines.append(f"    ✓ Транзакция присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
-            else:
-                lines.append(f"    ✗ Транзакция отсутствует в узле {bank['name']} (bank_{bank['id']}.db)")
+        if block_row:
+            banks = self.platform.list_banks()
+            bank_names = ", ".join([bank['name'] for bank in banks])
+            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names} на все узлы сети")
+        else:
+            lines.append("  После включения транзакции в блок будет автоматическая репликация на все узлы сети")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Оффлайн-транзакция считается завершённой после:")
@@ -1179,7 +1224,7 @@ class DigitalRubleApp(tk.Tk):
         lines.append("  Взаимосвязь блоков по хешу:")
         lines.append(f"    • previous_hash = {block['previous_hash']}")
         lines.append("    • Каждый блок связан с предыдущим через previous_hash")
-        lines.append("    • Формируется цепочка блоков (blockchain)")
+        lines.append("    • Формируется цепочка блоков (распределенный реестр)")
         lines.append("  Восстановление блоков:")
         lines.append("    • get_block_by_hash(hash) - восстановление блока по хешу")
         lines.append("    • get_block_by_previous_hash(previous_hash) - восстановление следующего блока")
@@ -1237,33 +1282,11 @@ class DigitalRubleApp(tk.Tk):
         lines.append("    4. Узел сохраняет все транзакции блока в локальную БД")
         lines.append("    5. Узел создаёт связи block_transactions в локальной БД")
         lines.append("  Статус репликации:")
-        lines.append("    При полной репликации каждый блок присутствует на ВСЕХ узлах (ФО)")
-        for bank in self.platform.list_banks():
-            from database import DatabaseManager
-            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
-            lb = bank_db.execute(
-                "SELECT * FROM blocks WHERE height = ?",
-                (height,),
-                fetchone=True,
-            )
-            if lb:
-                tx_count = bank_db.execute(
-                    """
-                    SELECT COUNT(*) as cnt FROM transactions t
-                    JOIN block_transactions bt ON bt.tx_id = t.id
-                    JOIN blocks b ON b.id = bt.block_id
-                    WHERE b.height = ?
-                    """,
-                    (height,),
-                    fetchone=True
-                )
-                lines.append(f"    ✓ Блок присутствует в узле {bank['name']} (bank_{bank['id']}.db)")
-                if tx_count:
-                    lines.append(f"      Транзакций в блоке: {tx_count['cnt']}")
-            else:
-                # Если блок отсутствует, это временная ситуация - при полной репликации он будет присутствовать
-                lines.append(f"    ⚠ Блок временно отсутствует в узле {bank['name']} (ожидает репликации)")
-                lines.append(f"      Примечание: При полной репликации блок будет присутствовать на всех узлах")
+        lines.append("    Блок присутствует в:")
+        lines.append("      • Центральный банк РФ (главный реестр)")
+        banks = self.platform.list_banks()
+        for bank in banks:
+            lines.append(f"      • {bank['name']} (ФО)")
         lines.append("")
         lines.append("ЭТАП 8: ФИНАЛИЗАЦИЯ БЛОКА")
         lines.append("  Блок считается финализированным после:")
@@ -1420,13 +1443,11 @@ class DigitalRubleApp(tk.Tk):
     def _translate_consensus_state(self, state: str) -> str:
         """Переводит состояние консенсуса на русский."""
         mapping = {
-            "LEADER": "Лидер",
+            "LEADER": "Лидер (ЦБ РФ)",
             "FOLLOWER": "Последователь",
-            "CANDIDATE": "Кандидат",
-            "ELECTION_START": "Начало выборов",
+            "SIGN_REQUEST": "Запрос подписи",
             "VOTE_GRANTED": "Голос получен",
-            "LEADER_ELECTED": "Лидер избран",
-            "ELECTION_FAILED": "Выборы провалены",
+            "VOTE_DENIED": "Голос отклонен",
             "APPEND_ENTRIES": "Добавление записей",
             "ENTRY_APPLIED": "Запись применена",
             "REPLICATION": "Репликация",
@@ -1436,6 +1457,9 @@ class DigitalRubleApp(tk.Tk):
             "LAG": "Задержка",
             "FAULT": "Ошибка",
         }
+        # Игнорируем состояния выборов - ЦБ всегда лидер
+        if state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
+            return "Лидер (ЦБ РФ)"  # Всегда показываем как лидер
         return mapping.get(state, state)
 
     def _make_table(
@@ -1461,9 +1485,19 @@ class DigitalRubleApp(tk.Tk):
         return tree
 
     def refresh_all(self) -> None:
-        self._refresh_user_lists()
-        self._refresh_tables()
-        self._refresh_consensus_canvas()
+        try:
+            self._refresh_user_lists()
+            self._refresh_tables()
+            self._refresh_consensus_canvas()
+            self._refresh_errors_table()  # Обновляем вкладку ЦБ и ошибки
+            # Запускаем анимацию консенсуса, если она еще не запущена
+            if self.consensus_canvas and self._consensus_anim_job is None:
+                self._start_consensus_animation()
+        except Exception as e:
+            # Логируем ошибку, но не прерываем работу приложения
+            import traceback
+            print(f"Ошибка при обновлении данных: {e}")
+            traceback.print_exc()
 
     def _refresh_user_lists(self) -> None:
         users = self.platform.list_users()
@@ -1511,14 +1545,15 @@ class DigitalRubleApp(tk.Tk):
 
         self._refresh_online_combos()
 
-    def _refresh_tables(self) -> None:
-        def clear(tree):
-            if tree:
-                for item in tree.get_children():
-                    tree.delete(item)
+    def _clear_tree(self, tree) -> None:
+        """Очищает Treeview от всех элементов"""
+        if tree:
+            for item in tree.get_children():
+                tree.delete(item)
 
+    def _refresh_tables(self) -> None:
         if self.user_table:
-            clear(self.user_table)
+            self._clear_tree(self.user_table)
             for u in self.platform.list_users():
                 self.user_table.insert(
                     "",
@@ -1537,7 +1572,7 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.tx_table:
-            clear(self.tx_table)
+            self._clear_tree(self.tx_table)
             for tx in self.platform.get_transactions():
                 sender = self.platform.get_user(tx["sender_id"])
                 receiver = self.platform.get_user(tx["receiver_id"])
@@ -1559,7 +1594,7 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.offline_table:
-            clear(self.offline_table)
+            self._clear_tree(self.offline_table)
             for tx in self.platform.get_offline_transactions():
                 sender = self.platform.get_user(tx["sender_id"])
                 receiver = self.platform.get_user(tx["receiver_id"])
@@ -1579,7 +1614,7 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.contract_table:
-            clear(self.contract_table)
+            self._clear_tree(self.contract_table)
             for sc in self.platform.get_smart_contracts():
                 creator = self.platform.get_user(sc["creator_id"])
                 beneficiary = self.platform.get_user(sc["beneficiary_id"])
@@ -1608,7 +1643,7 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.block_table:
-            clear(self.block_table)
+            self._clear_tree(self.block_table)
             rows = self.platform.db.execute(
                 "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
             )
@@ -1626,7 +1661,7 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.utxo_table:
-            clear(self.utxo_table)
+            self._clear_tree(self.utxo_table)
             rows = self.platform.db.execute(
                 """
                 SELECT id, owner_id, amount, status, created_tx_id, COALESCE(spent_tx_id, '-') AS spent_tx_id
@@ -1658,7 +1693,7 @@ class DigitalRubleApp(tk.Tk):
             self._refresh_bank_transactions()
 
         if self.issuance_table:
-            clear(self.issuance_table)
+            self._clear_tree(self.issuance_table)
             rows = self.platform.db.execute(
                 """
                 SELECT i.id, b.name as bank_name, i.amount, i.status
@@ -1676,57 +1711,180 @@ class DigitalRubleApp(tk.Tk):
                 )
 
         if self.consensus_table:
-            clear(self.consensus_table)
-            events = self.platform.consensus.get_recent_events()
+            self._clear_tree(self.consensus_table)
+            events = self.platform.consensus.get_recent_events(limit=100)
+            # Группируем события по блокам для лучшего отображения
             for event in events:
+                # Фильтруем события выборов - ЦБ всегда лидер, выборов не происходит
+                if event.state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
+                    continue  # Пропускаем события выборов
+                
+                # Форматируем время для отображения
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(event.created_at.replace('Z', '+00:00'))
+                    time_str = dt.strftime("%H:%M:%S")
+                except:
+                    time_str = event.created_at[-8:] if len(event.created_at) >= 8 else event.created_at
+                
                 self.consensus_table.insert(
                     "",
                     tk.END,
                     values=(
-                        event.block_hash[:12],
+                        event.block_hash[:16] + "...",
                         event.event,
                         event.actor,
                         self._translate_consensus_state(event.state),
-                        event.created_at,
+                        time_str,
                     ),
                 )
+        
+        # Запускаем анимацию консенсуса, если она еще не запущена
+        if self.consensus_canvas and self._consensus_anim_job is None:
+            self._start_consensus_animation()
 
         if self.activity_text:
             self.activity_text.delete("1.0", tk.END)
-            self.activity_text.tag_configure("conflict", foreground="red")
-            self.activity_text.tag_configure("separator", foreground="gray", font=("TkDefaultFont", 9, "bold"))
-            entries = self.platform.get_activity_log()
+            
+            # Настройка тегов для форматирования
+            self.activity_text.tag_configure("header", foreground="#1e40af", font=("TkDefaultFont", 10, "bold"))
+            self.activity_text.tag_configure("subheader", foreground="#059669", font=("TkDefaultFont", 9, "bold"))
+            self.activity_text.tag_configure("conflict", foreground="red", font=("TkDefaultFont", 9, "bold"))
+            self.activity_text.tag_configure("stage", foreground="#4b5563", font=("TkDefaultFont", 9))
+            self.activity_text.tag_configure("details", foreground="#6b7280", font=("TkDefaultFont", 8))
+            self.activity_text.tag_configure("separator", foreground="#9ca3af", font=("TkDefaultFont", 8))
+            self.activity_text.tag_configure("time", foreground="#9ca3af", font=("TkDefaultFont", 8))
+            self.activity_text.tag_configure("context", foreground="#7c3aed", font=("TkDefaultFont", 9, "bold"))
+            self.activity_text.tag_configure("actor", foreground="#059669", font=("TkDefaultFont", 9))
+            
+            # Получаем все логи в хронологическом порядке
+            all_entries = self.platform.get_activity_log(limit=1000)
+            
+            if not all_entries:
+                self.activity_text.insert(tk.END, "Журнал активности пуст.\n", "details")
+                return
+            
+            # Применяем фильтры и поиск
+            filter_value = self.activity_filter_combo.get() if hasattr(self, 'activity_filter_combo') and self.activity_filter_combo else "Все"
+            search_text = self.activity_search_entry.get().lower() if hasattr(self, 'activity_search_entry') and self.activity_search_entry else ""
+            
+            entries = []
+            for entry in all_entries:
+                context = entry.get("context", "Общее")
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "")
+                
+                # Фильтр по контексту
+                if filter_value != "Все":
+                    context_map = {
+                        "Транзакции": "Транзакция",
+                        "Смарт-контракты": "Смарт-контракт",
+                        "Эмиссия": "Эмиссия",
+                        "Блоки": "Блок",
+                        "Консенсус": "Консенсус",
+                    }
+                    if context_map.get(filter_value) != context:
+                        continue
+                
+                # Поиск по ключевым словам
+                if search_text:
+                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    if search_text not in searchable:
+                        continue
+                
+                entries.append(entry)
+            
+            if not entries:
+                self.activity_text.insert(tk.END, f"Нет записей, соответствующих фильтру '{filter_value}' и поиску '{search_text}'.\n", "details")
+                return
+            
+            # Отображаем все логи последовательно, детально и структурированно
             prev_context = None
-            prev_time = None
+            prev_stage = None
+            
             for entry in entries:
-
-                current_context = entry.get("context", "")
-                current_time = entry.get("created_at", "")
-                if prev_context and prev_context != current_context:
-                    separator = f"\n{'='*80}\n[{current_time}] === {current_context} ===\n{'-'*80}\n"
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "")
+                context = entry.get("context", "Общее")
+                created_at = entry.get("created_at", "")
+                
+                # Форматируем время
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    time_str = dt.strftime("%H:%M:%S.%f")[:-3]  # Миллисекунды
+                    date_str = dt.strftime("%Y-%m-%d")
+                except:
+                    time_str = created_at[-12:] if len(created_at) >= 12 else created_at
+                    date_str = ""
+                
+                # Разделитель при смене контекста
+                if prev_context and prev_context != context:
+                    separator = f"\n{'='*100}\n"
                     self.activity_text.insert(tk.END, separator, "separator")
-                elif prev_time and current_time:
-                    try:
-                        from datetime import datetime
-                        prev_dt = datetime.fromisoformat(prev_time.replace("Z", "+00:00"))
-                        curr_dt = datetime.fromisoformat(current_time.replace("Z", "+00:00"))
-                        if (curr_dt - prev_dt).total_seconds() > 2:
-                            separator = f"\n{'-'*80}\n"
-                            self.activity_text.insert(tk.END, separator, "separator")
-                    except:
-                        pass
-                line = f"[{entry['created_at']}] {entry['stage']} | {entry['actor']} -> {entry['details']}\n"
-                lower = (entry["stage"] + entry["details"]).lower()
-                if "конфликт" in lower or "двойной трат" in lower:
-                    self.activity_text.insert(tk.END, line, "conflict")
-                else:
-                    self.activity_text.insert(tk.END, line)
-                prev_context = current_context
-                prev_time = current_time
-            self.activity_text.see(tk.END)
+                
+                # Заголовок контекста (если изменился)
+                if prev_context != context:
+                    context_display = self._format_context_name(context)
+                    header_text = f"{context_display}\n"
+                    self.activity_text.insert(tk.END, header_text, "header")
+                
+                # Разделитель при смене этапа
+                if prev_stage and prev_stage != stage and prev_context == context:
+                    separator = f"{'-'*100}\n"
+                    self.activity_text.insert(tk.END, separator, "separator")
+                
+                # Этап
+                stage_text = f"  [{time_str}] {stage}\n"
+                self.activity_text.insert(tk.END, stage_text, "subheader")
+                
+                # Актор
+                if actor:
+                    actor_text = f"    Актор: {actor}\n"
+                    self.activity_text.insert(tk.END, actor_text, "actor")
+                
+                # Детали (полностью, без обрезания)
+                if details:
+                    # Проверяем на конфликты и ошибки
+                    lower = (stage + details).lower()
+                    is_conflict = "конфликт" in lower or "двойной трат" in lower or "ошибка" in lower or "error" in lower
+                    
+                    # Разбиваем детали на строки для лучшей читаемости
+                    detail_lines = details.split(", ")
+                    for detail_line in detail_lines:
+                        if detail_line.strip():
+                            detail_text = f"    {detail_line.strip()}\n"
+                            self.activity_text.insert(tk.END, detail_text, "conflict" if is_conflict else "details")
+                
+                # Пустая строка между записями
+                self.activity_text.insert(tk.END, "\n", "separator")
+                
+                prev_context = context
+                prev_stage = stage
+            
+            # Прокручиваем в начало для хронологического просмотра
+            self.activity_text.see("1.0")
+    
+    def _format_context_name(self, context: str) -> str:
+        """Форматирует название контекста для отображения"""
+        context_map = {
+            "Транзакция": "📝 ТРАНЗАКЦИЯ",
+            "Оффлайн-транзакция": "📱 ОФФЛАЙН-ТРАНЗАКЦИЯ",
+            "Смарт-контракт": "📄 СМАРТ-КОНТРАКТ",
+            "Эмиссия": "💰 ЭМИССИЯ",
+            "Блок": "🔗 БЛОК",
+            "Консенсус": "🤝 КОНСЕНСУС",
+            "Репликация": "🔄 РЕПЛИКАЦИЯ",
+            "Распределенный реестр": "📚 РАСПРЕДЕЛЕННЫЙ РЕЕСТР",
+            "Общее": "⚙️ ОБЩЕЕ",
+        }
+        return context_map.get(context, f"📌 {context.upper()}")
 
+    def _refresh_errors_table(self) -> None:
         if self.errors_table:
-            clear(self.errors_table)
+            self._clear_tree(self.errors_table)
             try:
                 failed_txs = self.platform.get_failed_transactions()
                 system_errors = self.platform.get_system_errors()
@@ -1767,160 +1925,529 @@ class DigitalRubleApp(tk.Tk):
 
         if self.cbr_log:
             self.cbr_log.delete("1.0", tk.END)
-            for entry in self.platform.get_activity_log(limit=200):
-                self.cbr_log.insert(
-                    tk.END,
-                    f"{entry['created_at']} | {entry['context']} | {entry['stage']} | {entry['details']}\n",
-                )
+            
+            # Настройка тегов для форматирования
+            self.cbr_log.tag_configure("header", foreground="#1e40af", font=("TkDefaultFont", 9, "bold"))
+            self.cbr_log.tag_configure("stage", foreground="#059669", font=("TkDefaultFont", 9, "bold"))
+            self.cbr_log.tag_configure("details", foreground="#4b5563", font=("TkDefaultFont", 8))
+            self.cbr_log.tag_configure("time", foreground="#9ca3af", font=("TkDefaultFont", 8))
+            self.cbr_log.tag_configure("actor", foreground="#7c3aed", font=("TkDefaultFont", 8))
+            self.cbr_log.tag_configure("context", foreground="#dc2626", font=("TkDefaultFont", 8, "bold"))
+            self.cbr_log.tag_configure("separator", foreground="#9ca3af", font=("TkDefaultFont", 8))
+            
+            # Получаем ВСЕ логи системы - ЦБ видит все действия
+            all_entries = self.platform.get_activity_log(limit=2000)
+            
+            if not all_entries:
+                self.cbr_log.insert(tk.END, "Журнал событий ЦБ пуст. Выполните действия в системе для генерации логов.\n", "details")
+                return
+            
+            # Применяем фильтры
+            filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
+            search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
+            
+            entries = []
+            for entry in all_entries:
+                context = entry.get("context", "Общее")
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "")
+                
+                # Фильтр по контексту
+                if filter_value != "Все":
+                    context_map = {
+                        "Транзакции": "Транзакция",
+                        "Смарт-контракты": "Смарт-контракт",
+                        "Эмиссия": "Эмиссия",
+                        "Блоки": "Блок",
+                        "Консенсус": "Консенсус",
+                    }
+                    if context_map.get(filter_value) != context:
+                        continue
+                
+                # Поиск по ключевым словам
+                if search_text:
+                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    if search_text not in searchable:
+                        continue
+                
+                entries.append(entry)
+            
+            if not entries:
+                self.cbr_log.insert(tk.END, f"Нет записей, соответствующих фильтру '{filter_value}' и поиску '{search_text}'.\n", "details")
+                return
+            
+            # Отображаем все логи последовательно с детальной структурой
+            prev_context = None
+            
+            for entry in entries:
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "Система")
+                context = entry.get("context", "Общее")
+                created_at = entry.get("created_at", "")
+                
+                # Форматируем время
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    time_str = dt.strftime("%H:%M:%S.%f")[:-3]  # Миллисекунды
+                except:
+                    time_str = created_at[-12:] if len(created_at) >= 12 else created_at
+                
+                # Разделитель при смене контекста
+                if prev_context and prev_context != context:
+                    separator = f"\n{'='*100}\n"
+                    self.cbr_log.insert(tk.END, separator, "separator")
+                
+                # Заголовок контекста (если изменился)
+                if prev_context != context:
+                    context_display = self._format_context_name(context)
+                    header_text = f"{context_display}\n"
+                    self.cbr_log.insert(tk.END, header_text, "header")
+                
+                # Этап с временем
+                stage_text = f"  [{time_str}] {stage}\n"
+                self.cbr_log.insert(tk.END, stage_text, "stage")
+                
+                # Актор
+                if actor and actor != "Система":
+                    actor_text = f"    Актор: {actor}\n"
+                    self.cbr_log.insert(tk.END, actor_text, "actor")
+                
+                # Детали (полностью, без обрезания)
+                if details:
+                    # Разбиваем детали на строки для лучшей читаемости
+                    detail_lines = details.split(", ")
+                    for detail_line in detail_lines:
+                        if detail_line.strip():
+                            detail_text = f"    {detail_line.strip()}\n"
+                            self.cbr_log.insert(tk.END, detail_text, "details")
+                
+                # Пустая строка между записями
+                self.cbr_log.insert(tk.END, "\n", "separator")
+                
+                prev_context = context
+            
+            # Прокручиваем в начало для хронологического просмотра
+            self.cbr_log.see("1.0")
+    
+    def _export_cbr_log_csv(self) -> None:
+        """Экспорт журнала ЦБ в CSV (использует те же отфильтрованные данные, что и журнал)"""
+        try:
+            # Получаем те же данные, что и в журнале (с учетом фильтров)
+            all_entries = self.platform.get_activity_log(limit=2000)
+            if not all_entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта")
+                return
+            
+            # Применяем те же фильтры, что и в журнале
+            filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
+            search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
+            
+            entries = []
+            for entry in all_entries:
+                context = entry.get("context", "Общее")
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "")
+                
+                # Фильтр по контексту
+                if filter_value != "Все":
+                    context_map = {
+                        "Транзакции": "Транзакция",
+                        "Смарт-контракты": "Смарт-контракт",
+                        "Эмиссия": "Эмиссия",
+                        "Блоки": "Блок",
+                        "Консенсус": "Консенсус",
+                    }
+                    if context_map.get(filter_value) != context:
+                        continue
+                
+                # Поиск по ключевым словам
+                if search_text:
+                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    if search_text not in searchable:
+                        continue
+                
+                entries.append(entry)
+            
+            if not entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта с примененными фильтрами")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Экспорт журнала ЦБ в CSV"
+            )
+            if not filename:
+                return
+            
+            import csv
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Время", "Контекст", "Этап", "Актор", "Детали"])
+                for entry in entries:
+                    writer.writerow([
+                        entry.get("created_at", ""),
+                        entry.get("context", ""),
+                        entry.get("stage", ""),
+                        entry.get("actor", ""),
+                        entry.get("details", "")
+                    ])
+            messagebox.showinfo("Экспорт", f"Журнал ЦБ экспортирован в {filename} ({len(entries)} записей)")
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
+    
+    def _export_cbr_log_json(self) -> None:
+        """Экспорт журнала ЦБ в JSON (использует те же отфильтрованные данные, что и журнал)"""
+        try:
+            # Получаем те же данные, что и в журнале (с учетом фильтров)
+            all_entries = self.platform.get_activity_log(limit=2000)
+            if not all_entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта")
+                return
+            
+            # Применяем те же фильтры, что и в журнале
+            filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
+            search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
+            
+            entries = []
+            for entry in all_entries:
+                context = entry.get("context", "Общее")
+                stage = entry.get("stage", "")
+                details = entry.get("details", "")
+                actor = entry.get("actor", "")
+                
+                # Фильтр по контексту
+                if filter_value != "Все":
+                    context_map = {
+                        "Транзакции": "Транзакция",
+                        "Смарт-контракты": "Смарт-контракт",
+                        "Эмиссия": "Эмиссия",
+                        "Блоки": "Блок",
+                        "Консенсус": "Консенсус",
+                    }
+                    if context_map.get(filter_value) != context:
+                        continue
+                
+                # Поиск по ключевым словам
+                if search_text:
+                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    if search_text not in searchable:
+                        continue
+                
+                entries.append(entry)
+            
+            if not entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта с примененными фильтрами")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                title="Экспорт журнала ЦБ в JSON"
+            )
+            if not filename:
+                return
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("Экспорт", f"Журнал ЦБ экспортирован в {filename} ({len(entries)} записей)")
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
+    
+    def _export_activity_log_csv(self) -> None:
+        """Экспорт журнала этапов в CSV"""
+        try:
+            entries = self.platform.get_activity_log(limit=1000)
+            if not entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                title="Экспорт журнала этапов в CSV"
+            )
+            if not filename:
+                return
+            
+            import csv
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Время", "Контекст", "Этап", "Актор", "Детали"])
+                for entry in entries:
+                    writer.writerow([
+                        entry.get("created_at", ""),
+                        entry.get("context", ""),
+                        entry.get("stage", ""),
+                        entry.get("actor", ""),
+                        entry.get("details", "")
+                    ])
+            messagebox.showinfo("Экспорт", f"Журнал этапов экспортирован в {filename}")
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
+    
+    def _export_activity_log_json(self) -> None:
+        """Экспорт журнала этапов в JSON"""
+        try:
+            entries = self.platform.get_activity_log(limit=1000)
+            if not entries:
+                messagebox.showinfo("Экспорт", "Нет данных для экспорта")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                title="Экспорт журнала этапов в JSON"
+            )
+            if not filename:
+                return
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(entries, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("Экспорт", f"Журнал этапов экспортирован в {filename}")
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
 
     def _refresh_consensus_canvas(self) -> None:
-        canvas = self.consensus_canvas
-        if not canvas:
-            return
-        canvas.delete("all")
-        nodes = self.platform.consensus.get_nodes()
-        if not nodes or len(nodes) == 0:
-            canvas.create_text(
-                200,
-                80,
-                text="Нет узлов. Добавьте банки, чтобы увидеть визуализацию консенсуса.",
-                fill="gray",
+        try:
+            canvas = self.consensus_canvas
+            if not canvas:
+                return
+            canvas.delete("all")
+            nodes = self.platform.consensus.get_nodes()
+            if not nodes or len(nodes) == 0:
+                canvas.create_text(
+                    200,
+                    80,
+                    text="Нет узлов. Добавьте банки, чтобы увидеть визуализацию консенсуса.",
+                    fill="gray",
+                )
+                return
+            width = int(canvas.winfo_width() or 1200)
+            leader = nodes[0]
+            bank_nodes = nodes[1:]
+
+            active_actor = self._consensus_active_actor
+            if active_actor is None:
+                recent_events = self.platform.consensus.get_recent_events(limit=1)
+                active_actor = recent_events[0].actor if recent_events and len(recent_events) > 0 else None
+
+            leader_x = width // 2
+            leader_y = 120
+
+            # ЦБ всегда лидер, не выходит из строя
+            if self._consensus_active_state in {"LEADER", "LEADER_APPEND"}:
+                leader_fill = "#10b981"
+            else:
+                leader_fill = "#10b981"  # ЦБ всегда лидер (зеленый)
+            canvas.create_oval(
+                leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, fill=leader_fill, outline="#0f172a", width=2
             )
-            return
-        width = int(canvas.winfo_width() or 1200)
-        leader = nodes[0]
-        bank_nodes = nodes[1:]
+            canvas.create_text(leader_x, leader_y, text=leader, fill="black", width=140)
 
-        active_actor = self._consensus_active_actor
-        if active_actor is None:
-            recent_events = self.platform.consensus.get_recent_events(limit=1)
-            active_actor = recent_events[0].actor if recent_events else None
-
-        leader_x = width // 2
-        leader_y = 120
-
-        if self._consensus_active_state in {"LEADER", "LEADER_APPEND"}:
-            leader_fill = "#10b981"
-        elif self._consensus_active_state in {"CANDIDATE", "ELECTION_START"}:
-            leader_fill = "#facc15"
-        else:
-            leader_fill = "#2563eb"
-        canvas.create_oval(
-            leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, fill=leader_fill, outline="#0f172a", width=2
-        )
-        canvas.create_text(leader_x, leader_y, text=leader, fill="black", width=140)
-
-        if bank_nodes:
-            min_spacing = 120
-            calculated_spacing = width // (len(bank_nodes) + 1)
-            spacing = max(calculated_spacing, min_spacing)
-            if spacing < min_spacing:
-                spacing = min_spacing
-            y_banks = 220
-            recent_events = self.platform.consensus.get_recent_events(limit=50)
-            active_nodes = set()
-            for event in recent_events:
-                if event.actor != leader and event.actor in bank_nodes:
-                    active_nodes.add(event.actor)
+            if bank_nodes:
+                min_spacing = 120
+                calculated_spacing = width // (len(bank_nodes) + 1)
+                spacing = max(calculated_spacing, min_spacing)
+                if spacing < min_spacing:
+                    spacing = min_spacing
+                y_banks = 220
+            
+            # Определяем активные узлы на текущем этапе
+            active_nodes = self._consensus_active_nodes if hasattr(self, '_consensus_active_nodes') else set()
+            if active_actor and active_actor != leader and active_actor in bank_nodes:
+                active_nodes.add(active_actor)
+            
+            # Сохраняем координаты узлов для анимации стрелок
+            node_positions = {}
+            
             for idx, node in enumerate(bank_nodes, start=1):
                 x = spacing * idx
                 if x + 35 > width - 10:
                     total_width = spacing * len(bank_nodes)
                     start_x = (width - total_width) // 2
                     x = start_x + spacing * (idx - 1) + spacing // 2
-                if node == active_actor:
-                    fill_color = "#10b981"
+                
+                node_positions[node] = (x, y_banks)
+                
+                # Определяем цвет узла в зависимости от активности
+                if node in active_nodes or node == active_actor:
+                    fill_color = "#10b981"  # Зеленый для активных
+                    outline_width = 3
                 else:
-                    fill_color = "#2563eb"
+                    fill_color = "#2563eb"  # Синий для неактивных
+                    outline_width = 2
+                
                 canvas.create_oval(
-                    x - 35, y_banks - 35, x + 35, y_banks + 35, fill=fill_color, outline="#0f172a", width=2
+                    x - 35, y_banks - 35, x + 35, y_banks + 35, 
+                    fill=fill_color, outline="#0f172a", width=outline_width
                 )
-                canvas.create_text(x, y_banks, text=node, fill="black", width=120)
-                if node == active_actor:
+                canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 9, "bold"), width=120)
+                
+                # Рисуем стрелку только для активных узлов на текущем этапе
+                if node in active_nodes or node == active_actor:
+                    # Анимированная стрелка от ЦБ к активному узлу
                     line_color = "#10b981"
-                else:
-                    line_color = "#059669"
-                canvas.create_line(
-                    leader_x,
-                    leader_y + 45,
-                    x,
-                    y_banks - 35,
-                    arrow=tk.LAST,
-                    fill=line_color,
-                    width=2,
-                )
-        subtitle = self._consensus_active_event or ""
-        if self._consensus_votes is not None and self._consensus_total_banks is not None:
-            votes = self._consensus_votes
-            replications = self._consensus_replications or 0
-            total_banks = self._consensus_total_banks
-        else:
-            votes = 0
-            replications = 0
-            total_banks = max(len(bank_nodes), 1)
-        canvas.create_text(
-            width // 2,
-            50,
-            text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
-            fill="#4b5563",
-        )
-        if subtitle:
+                    line_width = 3
+                    # Рисуем стрелку с анимацией (более яркая для активных)
+                    canvas.create_line(
+                        leader_x,
+                        leader_y + 45,
+                        x,
+                        y_banks - 35,
+                        arrow=tk.LAST,
+                        fill=line_color,
+                        width=line_width,
+                        arrowshape=(10, 12, 3)
+                    )
+                elif self._consensus_active_state in {"SIGN_REQUEST", "VOTE_GRANTED", "REPLICATION", "APPEND_ENTRIES"}:
+                    # Показываем серую пунктирную стрелку для неактивных узлов во время запросов
+                    canvas.create_line(
+                        leader_x,
+                        leader_y + 45,
+                        x,
+                        y_banks - 35,
+                        arrow=tk.LAST,
+                        fill="#9ca3af",
+                        width=1,
+                        dash=(5, 5)
+                    )
+            subtitle = self._consensus_active_event or ""
+            if self._consensus_votes is not None and self._consensus_total_banks is not None:
+                votes = self._consensus_votes
+                replications = self._consensus_replications or 0
+                total_banks = self._consensus_total_banks
+            else:
+                votes = 0
+                replications = 0
+                total_banks = max(len(bank_nodes), 1)
             canvas.create_text(
                 width // 2,
-                30,
-                text=subtitle,
+                50,
+                text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
                 fill="#4b5563",
             )
-
-        ledger_canvas = self.ledger_canvas
-        if ledger_canvas:
-            ledger_canvas.delete("all")
-            lwidth = int(ledger_canvas.winfo_width() or 1200)
-            rows = self.platform.db.execute(
-                "SELECT height, hash, previous_hash FROM blocks ORDER BY height DESC LIMIT 8",
-                fetchall=True,
-            )
-            if not rows:
-                ledger_canvas.create_text(
-                    lwidth // 2,
-                    40,
-                    text="Блоки реестра ещё не созданы",
-                    fill="black",
+            if subtitle:
+                canvas.create_text(
+                    width // 2,
+                    30,
+                    text=subtitle,
+                    fill="#4b5563",
                 )
-            else:
-                rows = list(reversed(rows))
-                self._ledger_last_rows = rows
-                count = len(rows)
-                spacing_l = max(lwidth // (count + 1), 120)
-                y_l = 80
-                prev_x = None
-                prev_y = None
-                for idx, row in enumerate(rows, start=1):
-                    x = spacing_l * idx
-                    x0, y0, x1, y1 = x - 60, y_l - 30, x + 60, y_l + 30
-                    is_active = row["height"] == self._ledger_active_height
-                    fill_color = "#fde68a" if is_active else "#eff6ff"
-                    outline_color = "#92400e" if is_active else "#1d4ed8"
-                    ledger_canvas.create_rectangle(
-                        x0, y0, x1, y1, fill=fill_color, outline=outline_color, width=2
-                    )
+
+            ledger_canvas = self.ledger_canvas
+            if ledger_canvas:
+                ledger_canvas.delete("all")
+                lwidth = int(ledger_canvas.winfo_width() or 1200)
+                rows = self.platform.db.execute(
+                    "SELECT height, hash, previous_hash FROM blocks ORDER BY height DESC LIMIT 8",
+                    fetchall=True,
+                )
+                if not rows:
                     ledger_canvas.create_text(
-                        x,
-                        y_l - 10,
-                        text=f"Блок {row['height']}",
+                        lwidth // 2,
+                        40,
+                        text="Блоки реестра ещё не созданы",
                         fill="black",
                     )
-                    ledger_canvas.create_text(
-                        x,
-                        y_l + 10,
-                        text=row["hash"][:10] + "...",
-                        fill="#4b5563",
-                    )
-                    if prev_x is not None:
-                        ledger_canvas.create_line(
-                            prev_x + 60, prev_y, x - 60, y_l, arrow=tk.LAST, fill="#6b7280"
+                else:
+                    rows = list(reversed(rows))
+                    self._ledger_last_rows = rows
+                    count = len(rows)
+                    spacing_l = max(lwidth // (count + 1), 120)
+                    y_l = 80
+                    prev_x = None
+                    prev_y = None
+                    for idx, row in enumerate(rows, start=1):
+                        x = spacing_l * idx
+                        x0, y0, x1, y1 = x - 60, y_l - 30, x + 60, y_l + 30
+                        is_active = row["height"] == self._ledger_active_height
+                        fill_color = "#fde68a" if is_active else "#eff6ff"
+                        outline_color = "#92400e" if is_active else "#1d4ed8"
+                        ledger_canvas.create_rectangle(
+                            x0, y0, x1, y1, fill=fill_color, outline=outline_color, width=2
                         )
-                    prev_x, prev_y = x, y_l
+                        ledger_canvas.create_text(
+                            x,
+                            y_l - 10,
+                            text=f"Блок {row['height']}",
+                            fill="black",
+                        )
+                        # Показываем хеш и количество транзакций
+                        hash_text = row["hash"][:12] + "..."
+                        ledger_canvas.create_text(
+                            x,
+                            y_l + 5,
+                            text=hash_text,
+                            fill="#4b5563",
+                            font=("TkDefaultFont", 7),
+                        )
+                        
+                        # Получаем количество транзакций в блоке
+                        tx_count_row = self.platform.db.execute(
+                            "SELECT COUNT(*) as count FROM block_transactions bt JOIN blocks b ON b.id = bt.block_id WHERE b.height = ?",
+                            (row["height"],),
+                            fetchone=True,
+                        )
+                        tx_count = tx_count_row["count"] if tx_count_row else 0
+                        ledger_canvas.create_text(
+                            x,
+                            y_l + 18,
+                            text=f"{tx_count} TX",
+                            fill="#059669",
+                            font=("TkDefaultFont", 7, "bold"),
+                        )
+                        
+                        # Интерактивная навигация - делаем блок кликабельным
+                        def on_block_click(event, block_height=row["height"]):
+                            # Находим блок в таблице и выделяем его
+                            if self.block_table:
+                                for item in self.block_table.get_children():
+                                    values = self.block_table.item(item, "values")
+                                    if values and str(block_height) in str(values[0]):
+                                        self.block_table.selection_set(item)
+                                        self.block_table.see(item)
+                                        self._on_block_row_double_click(None)
+                                        break
+                        
+                        # Создаем невидимую область для клика
+                        click_area = ledger_canvas.create_rectangle(
+                            x0, y0, x1, y1, fill="", outline="", width=0
+                        )
+                        ledger_canvas.tag_bind(click_area, "<Button-1>", on_block_click)
+                        ledger_canvas.tag_bind(click_area, "<Enter>", lambda e, x=x, y=y_l: ledger_canvas.create_text(x, y-40, text=f"Кликните для деталей", fill="#059669", font=("TkDefaultFont", 8), tags="tooltip"))
+                        ledger_canvas.tag_bind(click_area, "<Leave>", lambda e: ledger_canvas.delete("tooltip"))
+                        
+                        if prev_x is not None:
+                            # Улучшенная визуализация связи блоков
+                            ledger_canvas.create_line(
+                                prev_x + 60, prev_y, x - 60, y_l, 
+                                arrow=tk.LAST, 
+                                fill="#6b7280",
+                                width=2,
+                                arrowshape=(8, 10, 3)
+                            )
+                            # Показываем хеш связи
+                            mid_x = (prev_x + 60 + x - 60) // 2
+                            mid_y = (prev_y + y_l) // 2
+                            prev_hash = row.get("previous_hash") if isinstance(row, dict) else (row["previous_hash"] if "previous_hash" in row.keys() else None)
+                            prev_hash_short = prev_hash[:8] + "..." if prev_hash else "Genesis"
+                            ledger_canvas.create_text(
+                                mid_x, mid_y - 8,
+                                text=prev_hash_short,
+                                fill="#9ca3af",
+                                font=("TkDefaultFont", 6),
+                            )
+                        prev_x, prev_y = x, y_l
+        except Exception as e:
+            # Обрабатываем ошибки при обновлении canvas
+            import traceback
+            print(f"Ошибка при обновлении canvas консенсуса: {e}")
+            traceback.print_exc()
 
     def _refresh_online_combos(self) -> None:
         """Обновить списки отправителя и получателя с учётом выбранного типа перевода."""
@@ -1980,6 +2507,7 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_active_actor = None
             self._consensus_active_state = None
             self._consensus_active_event = None
+            self._consensus_active_nodes = set()
             self._ledger_active_height = None
             self._refresh_consensus_canvas()
             return
@@ -1988,23 +2516,61 @@ class DigitalRubleApp(tk.Tk):
             SELECT block_hash, event, actor, state, created_at
             FROM consensus_events
             WHERE block_hash = ?
+            AND state NOT IN ('CANDIDATE', 'ELECTION_START', 'LEADER_ELECTED', 'ELECTION_FAILED')
             ORDER BY id ASC
             """,
             (last_block,),
             fetchall=True,
         )
-        self._consensus_anim_events = [dict(r) for r in rows] if rows else []
+        # Фильтруем события выборов - ЦБ всегда лидер
+        filtered_events = []
+        for r in rows if rows else []:
+            event_dict = dict(r)
+            if event_dict.get("state") not in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
+                filtered_events.append(event_dict)
+        self._consensus_anim_events = filtered_events
         self._consensus_anim_index = 0
-        self._run_consensus_animation_step()
+        self._consensus_active_nodes = set()
+        if self._consensus_anim_events:
+            self._run_consensus_animation_step()
+        else:
+            self._refresh_consensus_canvas()
 
     def _run_consensus_animation_step(self) -> None:
-        if not self._consensus_anim_events or not self.consensus_canvas:
+        if not self.consensus_canvas:
             self._consensus_anim_job = None
             return
+        
+        # Если нет событий, просто обновляем canvas без анимации
+        if not self._consensus_anim_events:
+            self._consensus_active_actor = None
+            self._consensus_active_state = None
+            self._consensus_active_event = None
+            self._consensus_active_nodes = set()
+            self._consensus_votes = 0
+            self._consensus_replications = 0
+            nodes = self.platform.consensus.get_nodes()
+            self._consensus_total_banks = max(len(nodes) - 1, 1)
+            self._refresh_consensus_canvas()
+            self._consensus_anim_job = None
+            return
+        
         event = self._consensus_anim_events[self._consensus_anim_index]
         self._consensus_active_actor = event["actor"]
         self._consensus_active_state = event["state"]
         self._consensus_active_event = event["event"]
+        
+        # Определяем активные узлы на текущем этапе
+        self._consensus_active_nodes = set()
+        if event["state"] in {"SIGN_REQUEST", "VOTE_GRANTED", "REPLICATION", "APPEND_ENTRIES"}:
+            # На этапах запросов и репликации активен конкретный узел
+            if event["actor"] != self.platform.consensus.node_id:
+                self._consensus_active_nodes.add(event["actor"])
+        elif event["state"] == "COMMITTED":
+            # На этапе фиксации активны все узлы
+            nodes = self.platform.consensus.get_nodes()
+            self._consensus_active_nodes = set(nodes[1:])  # Все банки кроме лидера
+        
         if self._ledger_last_rows:
             idx = self._consensus_anim_index % len(self._ledger_last_rows)
             self._ledger_active_height = self._ledger_last_rows[idx]["height"]
@@ -2019,7 +2585,7 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_anim_index = (self._consensus_anim_index + 1) % len(
             self._consensus_anim_events
         )
-        self._consensus_anim_job = self.after(800, self._run_consensus_animation_step)
+        self._consensus_anim_job = self.after(1000, self._run_consensus_animation_step)  # Увеличил время для лучшей видимости
 
     def _selected_id(self, value: str) -> int:
         if not value:
@@ -2179,7 +2745,7 @@ class DigitalRubleApp(tk.Tk):
             if tree:
                 for item in tree.get_children():
                     tree.delete(item)
-        clear(self.bank_tx_table)
+        self._clear_tree(self.bank_tx_table)
         selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
         bank_id = None
         if selected_bank:
