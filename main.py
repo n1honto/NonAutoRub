@@ -831,7 +831,7 @@ class DigitalRubleApp(tk.Tk):
                 lines.append(f"  UTXO {u['id']} на сумму {u['amount']:.2f} ЦР")
                 total_in += u["amount"]
         else:
-            lines.append("  Для этой транзакции не найдено списанных UTXO (возможна старая модель).")
+            lines.append("  Для этой транзакции не найдено списанных UTXO")
         lines.append(f"  Итого по входам: {total_in:.2f} ЦР")
         lines.append("")
         lines.append("4. Выходы (созданные UTXO)")
