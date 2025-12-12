@@ -25,6 +25,7 @@ class DigitalRubleApp(tk.Tk):
             self.notebook = ttk.Notebook(self)
             self.notebook.pack(fill=tk.BOTH, expand=True)
             self._init_state()
+            self._setup_zoom()  # Настройка масштабирования
             self._build_tabs()
             self.refresh_all()
         except Exception as e:
@@ -79,6 +80,10 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_active_nodes = set()  # Активные узлы на текущем этапе
         self._ledger_last_rows = []
         self._ledger_active_height = None
+        self._zoom_factor = 1.0  # Текущий масштаб (1.0 = 100%)
+        self._base_font_size = 11  # Базовый размер шрифта
+        self._base_heading_font_size = 12  # Базовый размер шрифта заголовков
+        self._text_zoom_factors = {}  # Отдельные масштабы для Text виджетов журналов
 
     def _user_type_label(self, code: str) -> str:
         mapping = {
@@ -88,6 +93,191 @@ class DigitalRubleApp(tk.Tk):
         }
         return mapping.get(code, code)
 
+    def _setup_zoom(self) -> None:
+        """Настройка масштабирования через Ctrl + колесико мыши"""
+        def on_mousewheel(event):
+            # Определяем направление прокрутки
+            # Windows: event.delta > 0 для вверх, < 0 для вниз
+            # Linux: event.num == 4 для вверх, 5 для вниз
+            delta = 0
+            if hasattr(event, 'delta') and event.delta != 0:
+                delta = event.delta
+            elif hasattr(event, 'num'):
+                delta = 1 if event.num == 4 else -1
+            
+            if delta > 0:
+                # Увеличение (вверх)
+                self._zoom_factor = min(self._zoom_factor * 1.1, 3.0)  # Максимум 300%
+            elif delta < 0:
+                # Уменьшение (вниз)
+                self._zoom_factor = max(self._zoom_factor / 1.1, 0.5)  # Минимум 50%
+            else:
+                return  # Нет изменения
+            
+            self._apply_zoom()
+            return "break"
+        
+        # Привязываем событие к главному окну и notebook
+        # Windows и macOS
+        self.bind("<Control-MouseWheel>", on_mousewheel)
+        self.notebook.bind("<Control-MouseWheel>", on_mousewheel)
+        
+        # Linux (Button-4 и Button-5)
+        self.bind("<Control-Button-4>", on_mousewheel)
+        self.bind("<Control-Button-5>", on_mousewheel)
+        self.notebook.bind("<Control-Button-4>", on_mousewheel)
+        self.notebook.bind("<Control-Button-5>", on_mousewheel)
+        
+        # Также привязываем ко всем дочерним виджетам через bind_all
+        # Это обеспечит работу масштабирования во всех вкладках
+        self.bind_all("<Control-MouseWheel>", on_mousewheel)
+        self.bind_all("<Control-Button-4>", on_mousewheel)
+        self.bind_all("<Control-Button-5>", on_mousewheel)
+
+    def _setup_text_zoom(self, text_widget) -> None:
+        """Настройка отдельного масштабирования для Text виджета журнала"""
+        # Инициализируем масштаб для этого виджета
+        widget_id = id(text_widget)
+        if widget_id not in self._text_zoom_factors:
+            self._text_zoom_factors[widget_id] = {
+                'widget': text_widget,
+                'zoom_factor': 1.0,
+                'base_font_size': 8  # Базовый размер для текста в журналах
+            }
+        
+        def on_text_mousewheel(event):
+            # Определяем направление прокрутки
+            delta = 0
+            if hasattr(event, 'delta') and event.delta != 0:
+                delta = event.delta
+            elif hasattr(event, 'num'):
+                delta = 1 if event.num == 4 else -1
+            
+            if delta > 0:
+                # Увеличение (вверх)
+                self._text_zoom_factors[widget_id]['zoom_factor'] = min(
+                    self._text_zoom_factors[widget_id]['zoom_factor'] * 1.1, 3.0
+                )
+            elif delta < 0:
+                # Уменьшение (вниз)
+                self._text_zoom_factors[widget_id]['zoom_factor'] = max(
+                    self._text_zoom_factors[widget_id]['zoom_factor'] / 1.1, 0.5
+                )
+            else:
+                return
+            
+            # Применяем масштаб к этому виджету
+            self._apply_text_zoom(widget_id)
+            return "break"
+        
+        # Привязываем события только к этому виджету
+        text_widget.bind("<Control-MouseWheel>", on_text_mousewheel)
+        text_widget.bind("<Control-Button-4>", on_text_mousewheel)
+        text_widget.bind("<Control-Button-5>", on_text_mousewheel)
+
+    def _apply_text_zoom(self, widget_id: int) -> None:
+        """Применяет масштаб к конкретному Text виджету"""
+        if widget_id not in self._text_zoom_factors:
+            return
+        
+        zoom_data = self._text_zoom_factors[widget_id]
+        widget = zoom_data['widget']
+        zoom_factor = zoom_data['zoom_factor']
+        base_size = zoom_data['base_font_size']
+        
+        # Вычисляем новый размер шрифта
+        new_font_size = max(6, int(base_size * zoom_factor))
+        
+        try:
+            # Обновляем теги с учетом масштаба
+            if widget == self.activity_text:
+                # Для журнала активности
+                header_font = tkfont.Font(size=int(new_font_size * 1.25), weight="bold")
+                subheader_font = tkfont.Font(size=int(new_font_size * 1.1), weight="bold")
+                normal_font = tkfont.Font(size=new_font_size)
+                normal_bold_font = tkfont.Font(size=new_font_size, weight="bold")
+                small_font = tkfont.Font(size=int(new_font_size * 0.9))
+                
+                widget.tag_configure("header", font=header_font)
+                widget.tag_configure("subheader", font=subheader_font)
+                widget.tag_configure("conflict", font=subheader_font)
+                widget.tag_configure("stage", font=normal_font)
+                widget.tag_configure("details", font=small_font)
+                widget.tag_configure("separator", font=small_font)
+                widget.tag_configure("time", font=small_font)
+                widget.tag_configure("context", font=normal_bold_font)
+                widget.tag_configure("actor", font=normal_font)
+            elif widget == self.cbr_log:
+                # Для журнала ЦБ
+                header_font = tkfont.Font(size=int(new_font_size * 1.1), weight="bold")
+                normal_font = tkfont.Font(size=new_font_size)
+                normal_bold_font = tkfont.Font(size=new_font_size, weight="bold")
+                small_font = tkfont.Font(size=int(new_font_size * 0.9))
+                
+                widget.tag_configure("header", font=header_font)
+                widget.tag_configure("stage", font=header_font)
+                widget.tag_configure("details", font=small_font)
+                widget.tag_configure("time", font=small_font)
+                widget.tag_configure("actor", font=small_font)
+                widget.tag_configure("context", font=normal_bold_font)
+                widget.tag_configure("separator", font=small_font)
+        except Exception as e:
+            print(f"Ошибка при применении масштаба к текстовому виджету: {e}")
+
+    def _apply_zoom(self) -> None:
+        """Применяет текущий масштаб ко всем шрифтам"""
+        # Вычисляем новые размеры шрифтов
+        new_font_size = max(6, int(self._base_font_size * self._zoom_factor))
+        new_heading_font_size = max(7, int(self._base_heading_font_size * self._zoom_factor))
+        
+        # Обновляем глобальные шрифты
+        default_font = tkfont.nametofont("TkDefaultFont")
+        default_font.configure(size=new_font_size)
+        
+        heading_font = tkfont.nametofont("TkHeadingFont")
+        heading_font.configure(size=new_heading_font_size)
+        
+        # Обновляем шрифты для всех виджетов
+        self._update_widget_fonts(new_font_size, new_heading_font_size)
+
+    def _update_widget_fonts(self, font_size: int, heading_font_size: int) -> None:
+        """Обновляет шрифты для всех виджетов в приложении"""
+        # Обновляем шрифты для Text виджетов
+        text_widgets = []
+        if self.activity_text:
+            text_widgets.append(self.activity_text)
+        if self.cbr_log:
+            text_widgets.append(self.cbr_log)
+        
+        for widget in text_widgets:
+            try:
+                current_font = widget.cget("font")
+                if isinstance(current_font, str):
+                    # Если шрифт задан строкой, создаем новый
+                    font_obj = tkfont.Font(font=current_font)
+                    font_obj.configure(size=int(font_size * 0.9))  # Немного меньше для текста
+                    widget.configure(font=font_obj)
+                elif isinstance(current_font, tkfont.Font):
+                    current_font.configure(size=int(font_size * 0.9))
+            except Exception:
+                pass
+        
+        # Обновляем шрифты для таблиц (Treeview)
+        tables = [
+            self.user_table, self.tx_table, self.offline_table,
+            self.contract_table, self.consensus_table, self.block_table,
+            self.utxo_table, self.errors_table, self.bank_tx_table,
+            self.issuance_table
+        ]
+        
+        for table in tables:
+            if table:
+                try:
+                    # Создаем новый шрифт для таблиц
+                    table_font = tkfont.Font(size=font_size)
+                    table.configure(font=table_font)
+                except Exception:
+                    pass
 
     def _build_tabs(self) -> None:
         self._build_management_tab()
@@ -123,6 +313,7 @@ class DigitalRubleApp(tk.Tk):
         frame.columnconfigure(0, weight=1)
         text.insert(tk.END, "\n".join(lines))
         text.config(state="disabled")
+        self._add_copy_menu(text)
         # Экспорт JSON отключен по требованию
 
     def _export_encrypted_json(self, default_name: str, payload: dict, bank_id: int | None) -> None:
@@ -156,21 +347,25 @@ class DigitalRubleApp(tk.Tk):
         fl_entry = ttk.Entry(controls, width=5)
         fl_entry.insert(0, "5")
         fl_entry.grid(row=0, column=1, padx=5, pady=5)
+        self._add_entry_menu(fl_entry)
 
         ttk.Label(controls, text="Юридические лица:").grid(row=0, column=2, padx=5, pady=5)
         yl_entry = ttk.Entry(controls, width=5)
         yl_entry.insert(0, "3")
         yl_entry.grid(row=0, column=3, padx=5, pady=5)
+        self._add_entry_menu(yl_entry)
 
         ttk.Label(controls, text="Банки (ФО):").grid(row=0, column=4, padx=5, pady=5)
         bank_entry = ttk.Entry(controls, width=5)
         bank_entry.insert(0, "2")
         bank_entry.grid(row=0, column=5, padx=5, pady=5)
+        self._add_entry_menu(bank_entry)
 
         ttk.Label(controls, text="Гос.организации:").grid(row=0, column=6, padx=5, pady=5)
         gov_entry = ttk.Entry(controls, width=5)
         gov_entry.insert(0, "1")
         gov_entry.grid(row=0, column=7, padx=5, pady=5)
+        self._add_entry_menu(gov_entry)
 
         def seed_entities() -> None:
             try:
@@ -244,6 +439,7 @@ class DigitalRubleApp(tk.Tk):
         self.convert_amount = ttk.Entry(wallet_frame, width=FIELD_WIDTH//10)
         self.convert_amount.insert(0, "1000")
         self.convert_amount.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self._add_entry_menu(self.convert_amount)
         ttk.Button(wallet_frame, text="Пополнить ЦР", command=self._ui_convert_funds).grid(
             row=1, column=2, padx=5, pady=5, sticky="ew"
         )
@@ -288,6 +484,7 @@ class DigitalRubleApp(tk.Tk):
         )
         self.online_amount = ttk.Entry(online_frame, width=FIELD_WIDTH//10)
         self.online_amount.insert(0, "300")
+        self._add_entry_menu(self.online_amount)
         self.online_amount.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
         ttk.Button(online_frame, text="Перевести", command=self._ui_online_tx).grid(
             row=5, column=0, columnspan=2, padx=5, pady=10, sticky="ew"
@@ -310,6 +507,7 @@ class DigitalRubleApp(tk.Tk):
         )
         self.offline_amount = ttk.Entry(offline_wallet_frame, width=FIELD_WIDTH//10)
         self.offline_amount.insert(0, "500")
+        self._add_entry_menu(self.offline_amount)
         self.offline_amount.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         ttk.Button(offline_wallet_frame, text="Пополнить оффлайн", command=self._ui_fund_offline).grid(
             row=1, column=2, padx=5, pady=5, sticky="ew"
@@ -342,6 +540,7 @@ class DigitalRubleApp(tk.Tk):
         )
         self.offline_tx_amount = ttk.Entry(offline_tx_frame, width=FIELD_WIDTH//10)
         self.offline_tx_amount.insert(0, "200")
+        self._add_entry_menu(self.offline_tx_amount)
         self.offline_tx_amount.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
         ttk.Button(
             offline_tx_frame, text="Создать оффлайн-транзакцию", command=self._ui_offline_tx
@@ -375,6 +574,7 @@ class DigitalRubleApp(tk.Tk):
         self.contract_amount = ttk.Entry(contract_frame, width=FIELD_WIDTH//10)
         self.contract_amount.insert(0, "1000")
         self.contract_amount.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        self._add_entry_menu(self.contract_amount)
 
         ttk.Label(contract_frame, text="Описание:", width=LABEL_WIDTH//10).grid(
             row=4, column=0, padx=5, pady=5, sticky="w"
@@ -382,6 +582,7 @@ class DigitalRubleApp(tk.Tk):
         self.contract_description = ttk.Entry(contract_frame, width=FIELD_WIDTH//10)
         self.contract_description.insert(0, "Автоплатеж за коммунальные услуги")
         self.contract_description.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        self._add_entry_menu(self.contract_description)
 
         ttk.Label(contract_frame, text="Дата исполнения:", width=LABEL_WIDTH//10).grid(
             row=5, column=0, padx=5, pady=5, sticky="w"
@@ -391,6 +592,7 @@ class DigitalRubleApp(tk.Tk):
         default_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
         self.contract_date.insert(0, default_date)
         self.contract_date.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
+        self._add_entry_menu(self.contract_date)
 
         ttk.Label(contract_frame, text="Время исполнения:", width=LABEL_WIDTH//10).grid(
             row=6, column=0, padx=5, pady=5, sticky="w"
@@ -398,6 +600,7 @@ class DigitalRubleApp(tk.Tk):
         self.contract_time = ttk.Entry(contract_frame, width=FIELD_WIDTH//10)
         self.contract_time.insert(0, "12:00:00")
         self.contract_time.grid(row=6, column=1, padx=5, pady=5, sticky="ew")
+        self._add_entry_menu(self.contract_time)
 
         ttk.Button(
             contract_frame, text="Создать смарт-контракт", command=self._ui_create_contract
@@ -422,6 +625,7 @@ class DigitalRubleApp(tk.Tk):
         ttk.Label(request_frame, text="Сумма ЦР:").grid(row=0, column=2, padx=5, pady=5)
         self.emission_amount = ttk.Entry(request_frame)
         self.emission_amount.insert(0, "100000")
+        self._add_entry_menu(self.emission_amount)
         self.emission_amount.grid(row=0, column=3, padx=5, pady=5)
         ttk.Button(
             request_frame, text="Отправить запрос", command=self._ui_request_emission
@@ -498,6 +702,7 @@ class DigitalRubleApp(tk.Tk):
         self.cbr_search_entry = ttk.Entry(filter_frame, width=20)
         self.cbr_search_entry.pack(side=tk.LEFT, padx=5)
         self.cbr_search_entry.bind("<KeyRelease>", lambda e: self.refresh_all())
+        self._add_entry_menu(self.cbr_search_entry)
         
         ttk.Button(filter_frame, text="Экспорт CSV", command=lambda: self._export_cbr_log_csv()).pack(side=tk.LEFT, padx=5)
         ttk.Button(filter_frame, text="Экспорт JSON", command=lambda: self._export_cbr_log_json()).pack(side=tk.LEFT, padx=5)
@@ -505,6 +710,8 @@ class DigitalRubleApp(tk.Tk):
         self.cbr_log = tk.Text(tab, height=18)
         self.cbr_log.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
         tab.rowconfigure(4, weight=1)
+        self._add_copy_menu(self.cbr_log)
+        self._setup_text_zoom(self.cbr_log)  # Добавляем масштабирование для журнала ЦБ
 
     def _build_user_data_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -651,7 +858,7 @@ class DigitalRubleApp(tk.Tk):
 
     def _build_activity_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Информация о этапах")
+        self.notebook.add(tab, text="Информация о событиях системы")
         tab.rowconfigure(1, weight=1)
         tab.columnconfigure(0, weight=1)
 
@@ -678,6 +885,7 @@ class DigitalRubleApp(tk.Tk):
         self.activity_search_entry = ttk.Entry(filter_frame, width=20)
         self.activity_search_entry.pack(side=tk.LEFT, padx=5)
         self.activity_search_entry.bind("<KeyRelease>", lambda e: self.refresh_all())
+        self._add_entry_menu(self.activity_search_entry)
         
         ttk.Button(filter_frame, text="Экспорт CSV", command=lambda: self._export_activity_log_csv()).pack(side=tk.LEFT, padx=5)
         ttk.Button(filter_frame, text="Экспорт JSON", command=lambda: self._export_activity_log_json()).pack(side=tk.LEFT, padx=5)
@@ -691,6 +899,8 @@ class DigitalRubleApp(tk.Tk):
         self.activity_text = tk.Text(container, yscrollcommand=y_scroll.set)
         self.activity_text.grid(row=0, column=0, sticky="nsew")
         y_scroll.config(command=self.activity_text.yview)
+        self._add_copy_menu(self.activity_text)
+        self._setup_text_zoom(self.activity_text)  # Добавляем масштабирование для журнала активности
         self.errors_table = None
 
     def _on_tx_row_double_click(self, event) -> None:
@@ -827,7 +1037,7 @@ class DigitalRubleApp(tk.Tk):
         if block_row:
             banks = self.platform.list_banks()
             bank_names = ", ".join([bank['name'] for bank in banks])
-            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names} на все узлы сети")
+            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names} ")
         else:
             lines.append("  После включения транзакции в блок будет автоматическая репликация на все узлы сети")
         lines.append("")
@@ -989,7 +1199,7 @@ class DigitalRubleApp(tk.Tk):
         if block_row:
             banks = self.platform.list_banks()
             bank_names = ", ".join([bank['name'] for bank in banks])
-            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names} на все узлы сети")
+            lines.append(f"  Транзакция находится в блоке #{block_row['height']}, который реплицирован на узлы {bank_names}")
         else:
             lines.append("  После включения транзакции в блок будет автоматическая репликация на все узлы сети")
         lines.append("")
@@ -1462,6 +1672,125 @@ class DigitalRubleApp(tk.Tk):
             return "Лидер (ЦБ РФ)"  # Всегда показываем как лидер
         return mapping.get(state, state)
 
+    def _add_copy_menu(self, widget) -> None:
+        """Добавляет контекстное меню с копированием для Text виджетов и таблиц"""
+        def copy_text():
+            try:
+                if isinstance(widget, tk.Text):
+                    # Для Text виджетов
+                    if widget.tag_ranges(tk.SEL):
+                        text = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+                    else:
+                        text = widget.get("1.0", tk.END)
+                elif isinstance(widget, ttk.Treeview):
+                    # Для таблиц (Treeview)
+                    selection = widget.selection()
+                    lines = []
+                    
+                    # Добавляем заголовки колонок
+                    columns = widget["columns"]
+                    if columns:
+                        headers = [widget.heading(col, "text") or col for col in columns]
+                        lines.append("\t".join(headers))
+                    
+                    if selection:
+                        # Копируем выбранные строки
+                        for item_id in selection:
+                            values = widget.item(item_id, "values")
+                            if values:
+                                lines.append("\t".join(str(v) for v in values))
+                    else:
+                        # Копируем все данные таблицы
+                        for item_id in widget.get_children():
+                            values = widget.item(item_id, "values")
+                            if values:
+                                lines.append("\t".join(str(v) for v in values))
+                    text = "\n".join(lines)
+                else:
+                    return
+                
+                if text:
+                    self.clipboard_clear()
+                    self.clipboard_append(text)
+            except Exception as e:
+                print(f"Ошибка при копировании: {e}")
+        
+        def show_menu(event):
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label="Копировать", command=copy_text)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        
+        widget.bind("<Button-3>", show_menu)  # Правая кнопка мыши
+        widget.bind("<Control-c>", lambda e: copy_text())  # Ctrl+C
+
+    def _add_entry_menu(self, widget) -> None:
+        """Добавляет контекстное меню и поддержку вставки для Entry виджетов"""
+        def copy_text(event=None):
+            try:
+                if widget.selection_present():
+                    text = widget.selection_get()
+                else:
+                    text = widget.get()
+                if text:
+                    self.clipboard_clear()
+                    self.clipboard_append(text)
+                return "break"  # Предотвращаем стандартную обработку
+            except Exception as e:
+                print(f"Ошибка при копировании: {e}")
+                return "break"
+        
+        def cut_text(event=None):
+            try:
+                if widget.selection_present():
+                    text = widget.selection_get()
+                    self.clipboard_clear()
+                    self.clipboard_append(text)
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                return "break"  # Предотвращаем стандартную обработку
+            except Exception as e:
+                print(f"Ошибка при вырезании: {e}")
+                return "break"
+        
+        def paste_text(event=None):
+            try:
+                text = self.clipboard_get()
+                if text:
+                    # Удаляем выделенный текст, если есть
+                    if widget.selection_present():
+                        widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    # Вставляем в позицию курсора
+                    widget.insert(tk.INSERT, text)
+                return "break"  # Предотвращаем стандартную обработку
+            except Exception as e:
+                print(f"Ошибка при вставке: {e}")
+                return "break"
+        
+        def select_all(event=None):
+            widget.select_range(0, tk.END)
+            widget.icursor(tk.END)
+            return "break"  # Предотвращаем стандартную обработку
+        
+        def show_menu(event):
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label="Вырезать", command=cut_text)
+            menu.add_command(label="Копировать", command=copy_text)
+            menu.add_command(label="Вставить", command=paste_text)
+            menu.add_separator()
+            menu.add_command(label="Выделить всё", command=select_all)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        
+        widget.bind("<Button-3>", show_menu)  # Правая кнопка мыши
+        widget.bind("<Control-c>", copy_text)  # Ctrl+C
+        widget.bind("<Control-x>", cut_text)  # Ctrl+X
+        widget.bind("<Control-v>", paste_text)  # Ctrl+V
+        widget.bind("<Control-a>", select_all)  # Ctrl+A
+
     def _make_table(
         self,
         parent,
@@ -1482,6 +1811,7 @@ class DigitalRubleApp(tk.Tk):
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.grid(row=row, column=column + columnspan, sticky="ns")
+        self._add_copy_menu(tree)
         return tree
 
     def refresh_all(self) -> None:
@@ -1746,16 +2076,28 @@ class DigitalRubleApp(tk.Tk):
         if self.activity_text:
             self.activity_text.delete("1.0", tk.END)
             
-            # Настройка тегов для форматирования
-            self.activity_text.tag_configure("header", foreground="#1e40af", font=("TkDefaultFont", 10, "bold"))
-            self.activity_text.tag_configure("subheader", foreground="#059669", font=("TkDefaultFont", 9, "bold"))
-            self.activity_text.tag_configure("conflict", foreground="red", font=("TkDefaultFont", 9, "bold"))
-            self.activity_text.tag_configure("stage", foreground="#4b5563", font=("TkDefaultFont", 9))
-            self.activity_text.tag_configure("details", foreground="#6b7280", font=("TkDefaultFont", 8))
-            self.activity_text.tag_configure("separator", foreground="#9ca3af", font=("TkDefaultFont", 8))
-            self.activity_text.tag_configure("time", foreground="#9ca3af", font=("TkDefaultFont", 8))
-            self.activity_text.tag_configure("context", foreground="#7c3aed", font=("TkDefaultFont", 9, "bold"))
-            self.activity_text.tag_configure("actor", foreground="#059669", font=("TkDefaultFont", 9))
+            # Настройка тегов для форматирования с учетом масштаба
+            widget_id = id(self.activity_text)
+            zoom_factor = self._text_zoom_factors.get(widget_id, {}).get('zoom_factor', 1.0)
+            base_size = self._text_zoom_factors.get(widget_id, {}).get('base_font_size', 8)
+            font_size = max(6, int(base_size * zoom_factor))
+            
+            # Создаем шрифты с учетом масштаба
+            header_font = tkfont.Font(size=int(font_size * 1.25), weight="bold")
+            subheader_font = tkfont.Font(size=int(font_size * 1.1), weight="bold")
+            normal_font = tkfont.Font(size=font_size)
+            normal_bold_font = tkfont.Font(size=font_size, weight="bold")
+            small_font = tkfont.Font(size=int(font_size * 0.9))
+            
+            self.activity_text.tag_configure("header", foreground="#1e40af", font=header_font)
+            self.activity_text.tag_configure("subheader", foreground="#059669", font=subheader_font)
+            self.activity_text.tag_configure("conflict", foreground="red", font=subheader_font)
+            self.activity_text.tag_configure("stage", foreground="#4b5563", font=normal_font)
+            self.activity_text.tag_configure("details", foreground="#6b7280", font=small_font)
+            self.activity_text.tag_configure("separator", foreground="#9ca3af", font=small_font)
+            self.activity_text.tag_configure("time", foreground="#9ca3af", font=small_font)
+            self.activity_text.tag_configure("context", foreground="#7c3aed", font=normal_bold_font)
+            self.activity_text.tag_configure("actor", foreground="#059669", font=normal_font)
             
             # Получаем все логи в хронологическом порядке
             all_entries = self.platform.get_activity_log(limit=1000)
@@ -1799,10 +2141,7 @@ class DigitalRubleApp(tk.Tk):
                 self.activity_text.insert(tk.END, f"Нет записей, соответствующих фильтру '{filter_value}' и поиску '{search_text}'.\n", "details")
                 return
             
-            # Отображаем все логи последовательно, детально и структурированно
-            prev_context = None
-            prev_stage = None
-            
+            # Отображаем все логи последовательно как события системы
             for entry in entries:
                 stage = entry.get("stage", "")
                 details = entry.get("details", "")
@@ -1814,55 +2153,32 @@ class DigitalRubleApp(tk.Tk):
                 try:
                     from datetime import datetime
                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    time_str = dt.strftime("%H:%M:%S.%f")[:-3]  # Миллисекунды
-                    date_str = dt.strftime("%Y-%m-%d")
+                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Дата и время с миллисекундами
                 except:
-                    time_str = created_at[-12:] if len(created_at) >= 12 else created_at
-                    date_str = ""
+                    time_str = created_at if created_at else ""
                 
-                # Разделитель при смене контекста
-                if prev_context and prev_context != context:
-                    separator = f"\n{'='*100}\n"
-                    self.activity_text.insert(tk.END, separator, "separator")
+                # Проверяем на конфликты и ошибки
+                lower = (stage + details).lower()
+                is_conflict = "конфликт" in lower or "двойной трат" in lower or "ошибка" in lower or "error" in lower
                 
-                # Заголовок контекста (если изменился)
-                if prev_context != context:
-                    context_display = self._format_context_name(context)
-                    header_text = f"{context_display}\n"
-                    self.activity_text.insert(tk.END, header_text, "header")
+                # Формируем строку события в формате лога
+                log_parts = []
+                if time_str:
+                    log_parts.append(f"[{time_str}]")
+                if context and context != "Общее":
+                    log_parts.append(f"[{context}]")
+                if stage:
+                    log_parts.append(f"[{stage}]")
+                if actor and actor != "Система":
+                    log_parts.append(f"[{actor}]")
                 
-                # Разделитель при смене этапа
-                if prev_stage and prev_stage != stage and prev_context == context:
-                    separator = f"{'-'*100}\n"
-                    self.activity_text.insert(tk.END, separator, "separator")
-                
-                # Этап
-                stage_text = f"  [{time_str}] {stage}\n"
-                self.activity_text.insert(tk.END, stage_text, "subheader")
-                
-                # Актор
-                if actor:
-                    actor_text = f"    Актор: {actor}\n"
-                    self.activity_text.insert(tk.END, actor_text, "actor")
-                
-                # Детали (полностью, без обрезания)
+                # Основная строка события
+                event_line = " ".join(log_parts)
                 if details:
-                    # Проверяем на конфликты и ошибки
-                    lower = (stage + details).lower()
-                    is_conflict = "конфликт" in lower or "двойной трат" in lower or "ошибка" in lower or "error" in lower
-                    
-                    # Разбиваем детали на строки для лучшей читаемости
-                    detail_lines = details.split(", ")
-                    for detail_line in detail_lines:
-                        if detail_line.strip():
-                            detail_text = f"    {detail_line.strip()}\n"
-                            self.activity_text.insert(tk.END, detail_text, "conflict" if is_conflict else "details")
+                    event_line += f" {details}"
                 
-                # Пустая строка между записями
-                self.activity_text.insert(tk.END, "\n", "separator")
-                
-                prev_context = context
-                prev_stage = stage
+                # Вставляем строку события
+                self.activity_text.insert(tk.END, event_line + "\n", "conflict" if is_conflict else "details")
             
             # Прокручиваем в начало для хронологического просмотра
             self.activity_text.see("1.0")
@@ -1926,14 +2242,25 @@ class DigitalRubleApp(tk.Tk):
         if self.cbr_log:
             self.cbr_log.delete("1.0", tk.END)
             
-            # Настройка тегов для форматирования
-            self.cbr_log.tag_configure("header", foreground="#1e40af", font=("TkDefaultFont", 9, "bold"))
-            self.cbr_log.tag_configure("stage", foreground="#059669", font=("TkDefaultFont", 9, "bold"))
-            self.cbr_log.tag_configure("details", foreground="#4b5563", font=("TkDefaultFont", 8))
-            self.cbr_log.tag_configure("time", foreground="#9ca3af", font=("TkDefaultFont", 8))
-            self.cbr_log.tag_configure("actor", foreground="#7c3aed", font=("TkDefaultFont", 8))
-            self.cbr_log.tag_configure("context", foreground="#dc2626", font=("TkDefaultFont", 8, "bold"))
-            self.cbr_log.tag_configure("separator", foreground="#9ca3af", font=("TkDefaultFont", 8))
+            # Настройка тегов для форматирования с учетом масштаба
+            widget_id = id(self.cbr_log)
+            zoom_factor = self._text_zoom_factors.get(widget_id, {}).get('zoom_factor', 1.0)
+            base_size = self._text_zoom_factors.get(widget_id, {}).get('base_font_size', 8)
+            font_size = max(6, int(base_size * zoom_factor))
+            
+            # Создаем шрифты с учетом масштаба
+            header_font = tkfont.Font(size=int(font_size * 1.1), weight="bold")
+            normal_font = tkfont.Font(size=font_size)
+            normal_bold_font = tkfont.Font(size=font_size, weight="bold")
+            small_font = tkfont.Font(size=int(font_size * 0.9))
+            
+            self.cbr_log.tag_configure("header", foreground="#1e40af", font=header_font)
+            self.cbr_log.tag_configure("stage", foreground="#059669", font=header_font)
+            self.cbr_log.tag_configure("details", foreground="#4b5563", font=small_font)
+            self.cbr_log.tag_configure("time", foreground="#9ca3af", font=small_font)
+            self.cbr_log.tag_configure("actor", foreground="#7c3aed", font=small_font)
+            self.cbr_log.tag_configure("context", foreground="#dc2626", font=normal_bold_font)
+            self.cbr_log.tag_configure("separator", foreground="#9ca3af", font=small_font)
             
             # Получаем ВСЕ логи системы - ЦБ видит все действия
             all_entries = self.platform.get_activity_log(limit=2000)
