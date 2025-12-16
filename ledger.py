@@ -5,7 +5,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from database import DatabaseManager
 
@@ -240,6 +240,88 @@ class DistributedLedger:
             chain.append(block)
             current_hash = block["hash"]
         return chain
+    
+    def get_chain_tip(self) -> dict:
+        """Получить последний блок (tip) цепочки"""
+        return self.get_last_block()
+    
+    def get_chain_length(self) -> int:
+        """Получить длину цепочки (высота последнего блока + 1)"""
+        last = self.get_last_block()
+        return (last["height"] + 1) if last else 0
+    
+    def find_common_ancestor(self, other_chain_tip_hash: str) -> Optional[dict]:
+        """
+        Найти общего предка с другой цепочкой.
+        Используется для разрешения конфликтов (fork resolution).
+        """
+        # Получаем блок по хешу
+        other_block = self.get_block_by_hash(other_chain_tip_hash)
+        if not other_block:
+            return None
+        
+        # Идем назад по цепочке, ища общий блок
+        our_last = self.get_last_block()
+        if not our_last:
+            return None
+        
+        # Строим путь от нашего последнего блока к genesis
+        our_path = {}
+        current = our_last
+        while current:
+            our_path[current["hash"]] = current
+            if current["previous_hash"] == "0" * 64:
+                break
+            current = self.get_block_by_hash(current["previous_hash"])
+            if not current:
+                break
+        
+        # Идем назад по другой цепочке, ища пересечение
+        current = other_block
+        while current:
+            if current["hash"] in our_path:
+                return our_path[current["hash"]]
+            if current["previous_hash"] == "0" * 64:
+                break
+            current = self.get_block_by_hash(current["previous_hash"])
+            if not current:
+                break
+        
+        return None
+    
+    def get_blocks_from_height(self, from_height: int, to_height: Optional[int] = None) -> List[dict]:
+        """Получить блоки в диапазоне высот"""
+        if to_height is None:
+            rows = self.db.execute(
+                "SELECT * FROM blocks WHERE height >= ? ORDER BY height ASC",
+                (from_height,),
+                fetchall=True
+            )
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM blocks WHERE height >= ? AND height <= ? ORDER BY height ASC",
+                (from_height, to_height),
+                fetchall=True
+            )
+        return [dict(row) for row in rows] if rows else []
+    
+    def has_block(self, block_hash: str) -> bool:
+        """Проверить наличие блока по хешу"""
+        row = self.db.execute(
+            "SELECT id FROM blocks WHERE hash = ?",
+            (block_hash,),
+            fetchone=True
+        )
+        return row is not None
+    
+    def get_block_height(self, block_hash: str) -> Optional[int]:
+        """Получить высоту блока по хешу"""
+        row = self.db.execute(
+            "SELECT height FROM blocks WHERE hash = ?",
+            (block_hash,),
+            fetchone=True
+        )
+        return row["height"] if row else None
 
 
 def _proof_of_authority_nonce(height: int, previous_hash: str) -> int:

@@ -151,16 +151,43 @@ class MetricsCollector:
 
 
 class DigitalRublePlatform:
-    def __init__(self) -> None:
-        self.db = DatabaseManager()
+    def __init__(self, node_id: str = "CBR_0", db_path: str = "digital_ruble.db") -> None:
+        self.db = DatabaseManager(db_path)
         self.ledger = DistributedLedger(self.db)
         self.consensus = MasterchainConsensus(self.db)
         self.metrics = MetricsCollector(self.db)
+        self.node_id = node_id
         self._cleanup_transient()
         self._ensure_seed_state()
         self._lagging_bank_id: Optional[int] = None
         self._offline_tx_counter: int = 0
         self._offline_sync_counter: int = 0
+        
+        # Инициализация распределенной сети
+        try:
+            from node_manager import NodeManager
+            from p2p_network import P2PNetwork
+            from fork_resolution import ForkResolver
+            
+            self.node_manager = NodeManager(self.db, self.node_id)
+            self.p2p_network = P2PNetwork(self.node_manager, self.ledger, self.db, self.node_id)
+            self.fork_resolver = ForkResolver(self.ledger, self.db)
+            
+            # Регистрируем текущий узел
+            self.node_manager.register_node(
+                node_id=self.node_id,
+                name="ЦБ РФ (Главный узел)",
+                node_type="CBR",
+                db_path=db_path,
+                address=f"local://{db_path}"
+            )
+            
+            self._distributed_enabled = True
+        except ImportError:
+            self._distributed_enabled = False
+            self.node_manager = None
+            self.p2p_network = None
+            self.fork_resolver = None
         
         # Инициализация батч-обработки и детального логирования
         if BATCH_PROCESSING_AVAILABLE:
@@ -258,7 +285,23 @@ class DigitalRublePlatform:
             bank_ids.append(bank_id)
             from database import DatabaseManager
 
-            DatabaseManager(f"bank_{bank_id}.db")
+            db_path = f"bank_{bank_id}.db"
+            DatabaseManager(db_path)
+            
+            # Регистрируем узел в распределенной сети
+            if self._distributed_enabled and self.node_manager:
+                node_id = f"BANK_{bank_id}"
+                self.node_manager.register_node(
+                    node_id=node_id,
+                    name=name,
+                    node_type="BANK",
+                    db_path=db_path,
+                    address=f"local://{db_path}"
+                )
+                # Регистрируем соединение с текущим узлом
+                self.node_manager.register_connection(self.node_id, node_id)
+                self.node_manager.register_connection(node_id, self.node_id)
+            
             self._log_activity(
                 actor=name,
                 stage="Регистрация ФО",
@@ -266,6 +309,18 @@ class DigitalRublePlatform:
                 context="Управление",
             )
         return bank_ids
+    
+    def sync_with_network(self) -> Dict[str, int]:
+        """
+        Синхронизация с сетью: запрос обновлений от всех активных узлов.
+        
+        Returns:
+            Dict с результатами синхронизации
+        """
+        if not self._distributed_enabled or not self.p2p_network:
+            return {"nodes_checked": 0, "blocks_added": 0, "blocks_failed": 0}
+        
+        return self.p2p_network.sync_with_network()
 
     def create_users(self, count: int, user_type: str) -> List[int]:
         users: List[int] = []
@@ -1297,7 +1352,61 @@ class DigitalRublePlatform:
         self._log_error(error_type, error_message, context)
 
     def _replicate_block_to_banks(self, block, txs: List[Dict]) -> None:
-        """Полная репликация: все блоки реплицируются на все узлы (ФО)"""
+        """
+        Распределенная репликация: блок распространяется через P2P сеть.
+        Гарантированная репликация через legacy метод для всех узлов.
+        """
+        # Всегда используем legacy метод для гарантированной репликации на все узлы
+        self._replicate_block_to_banks_legacy(block, txs)
+        
+        # Дополнительно используем P2P сеть, если она доступна
+        if self._distributed_enabled and self.p2p_network:
+            try:
+                # Получаем полные данные транзакций
+                tx_ids = [t["id"] for t in txs]
+                full_txs = []
+                if tx_ids:
+                    placeholders = ",".join(["?"] * len(tx_ids))
+                    rows = self.db.execute(
+                        f"SELECT * FROM transactions WHERE id IN ({placeholders})",
+                        tuple(tx_ids),
+                        fetchall=True,
+                    )
+                    full_txs = [dict(r) for r in rows] if rows else []
+                
+                # Распространяем блок через P2P сеть (дополнительно)
+                results = self.p2p_network.broadcast_block(block, full_txs)
+                
+                # Логируем результаты
+                successful = sum(1 for success in results.values() if success)
+                total = len(results)
+                self._log_activity(
+                    actor="P2P Сеть",
+                    stage="Дополнительное распространение блока",
+                    details=f"Блок {block.height} дополнительно распространен на {successful}/{total} узлов через P2P",
+                    context="Распределенный реестр",
+                )
+                
+                # Обновляем информацию о текущем узле
+                if self.node_manager:
+                    self.node_manager.update_node_status(
+                        self.node_id,
+                        self.node_manager.get_node(self.node_id).status,
+                        height=block.height,
+                        last_block_hash=block.hash
+                    )
+                
+            except Exception as e:
+                # Ошибка P2P не критична, так как legacy метод уже выполнил репликацию
+                self._log_activity(
+                    actor="P2P Сеть",
+                    stage="Предупреждение P2P",
+                    details=f"P2P распространение блока {block.height} не удалось: {str(e)} (legacy репликация выполнена)",
+                    context="Распределенный реестр",
+                )
+    
+    def _replicate_block_to_banks_legacy(self, block, txs: List[Dict]) -> None:
+        """Старый метод репликации (для обратной совместимости)"""
         banks = self.list_banks()
         if not banks:
             return
@@ -1485,6 +1594,11 @@ class DigitalRublePlatform:
             raise ValueError("Смарт-контракт инициирует только физическое лицо")
         if beneficiary["user_type"] not in {"BUSINESS", "GOVERNMENT"}:
             raise ValueError("Получатель должен быть ЮЛ или госорган")
+        # Проверка, что у обоих участников открыт цифровой кошелек
+        if creator["wallet_status"] != "OPEN":
+            raise ValueError(f"У создателя {creator['name']} не открыт цифровой кошелек. Необходимо открыть кошелек перед созданием смарт-контракта.")
+        if beneficiary["wallet_status"] != "OPEN":
+            raise ValueError(f"У получателя {beneficiary['name']} не открыт цифровой кошелек. Необходимо открыть кошелек перед созданием смарт-контракта.")
         contract_id = generate_id("sc")
         if next_execution is None:
             next_execution = datetime.utcnow() + timedelta(days=36500)
