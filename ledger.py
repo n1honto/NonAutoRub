@@ -137,11 +137,13 @@ class DistributedLedger:
             # крипто‑лог не должен ломать формирование блока
             pass
 
+        # Подпись блока будет добавлена после создания блока в platform.py
+        # Здесь сохраняем NULL, который будет обновлен позже
         self.db.execute(
             """
             INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
-                               signer, nonce, duration_ms, tx_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               signer, nonce, duration_ms, tx_count, block_signature)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (
                 block.height,

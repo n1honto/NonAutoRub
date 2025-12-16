@@ -613,6 +613,12 @@ class DigitalRublePlatform:
             tx = self._create_transaction_record(context, status="CONFIRMED")
             self._create_utxo(user_id, amount, tx["id"])
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
+            # Создаем подпись блока ЦБ РФ
+            block_signature = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE blocks SET block_signature = ? WHERE height = ?",
+                (block_signature, block.height),
+            )
             cbr_sig = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
@@ -699,6 +705,12 @@ class DigitalRublePlatform:
             self._spend_utxos(user_id, amount, tx["id"])
             self._create_utxo(user_id, amount, tx["id"])
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
+            # Создаем подпись блока ЦБ РФ
+            block_signature = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE blocks SET block_signature = ? WHERE height = ?",
+                (block_signature, block.height),
+            )
             cbr_sig = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
@@ -1038,6 +1050,12 @@ class DigitalRublePlatform:
                     self.tx_logger.log_utxo_processing(tx["id"], context.sender_id, context.receiver_id, context.amount, change)
             
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
+            # Создаем подпись блока ЦБ РФ
+            block_signature = _sign("CBR", 0, block.hash)
+            self.db.execute(
+                "UPDATE blocks SET block_signature = ? WHERE height = ?",
+                (block_signature, block.height),
+            )
             cbr_sig = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE transactions SET cbr_sig = ? WHERE id = ?",
@@ -1425,9 +1443,13 @@ class DigitalRublePlatform:
 
         # Получаем все транзакции блока из центральной БД
         block_id_row = self.db.execute(
-            "SELECT id FROM blocks WHERE height = ?", (block.height,), fetchone=True
+            "SELECT id, block_signature FROM blocks WHERE height = ?", (block.height,), fetchone=True
         )
+        block_signature = None
         if block_id_row:
+            # Преобразуем sqlite3.Row в словарь для использования .get()
+            block_id_dict = dict(block_id_row)
+            block_signature = block_id_dict.get("block_signature")
             all_tx_rows = self.db.execute(
                 """
                 SELECT t.* FROM transactions t
@@ -1457,8 +1479,8 @@ class DigitalRublePlatform:
                     local_db.execute(
                         """
                         INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
-                                           signer, nonce, duration_ms, tx_count)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                           signer, nonce, duration_ms, tx_count, block_signature)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             block.height,
@@ -1470,6 +1492,7 @@ class DigitalRublePlatform:
                             block.nonce,
                             block.duration_ms,
                             len(all_txs),
+                            block_signature,
                         ),
                     )
                     block_row = local_db.execute(

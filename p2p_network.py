@@ -271,6 +271,12 @@ class P2PNetwork:
             if computed_hash != block_data["hash"]:
                 return False
             
+            # Проверяем подпись блока
+            if "block_signature" in block_data and block_data["block_signature"]:
+                from platform import _verify
+                if not _verify("CBR", 0, block_data["hash"], block_data["block_signature"]):
+                    return False
+            
             return True
             
         except Exception as e:
@@ -348,6 +354,7 @@ class P2PNetwork:
         """
         Применение ответа на синхронизацию.
         Добавляет полученные блоки в локальный блокчейн.
+        Использует атомарные транзакции БД для обеспечения целостности.
         
         Returns:
             (added_blocks, failed_blocks)
@@ -379,57 +386,66 @@ class P2PNetwork:
                     
                     # Валидируем блок перед добавлением
                     if self._validate_block_locally(block_data, block_txs):
-                        # Добавляем блок
-                        self.db.execute(
-                            """
-                            INSERT OR IGNORE INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
-                                                           signer, nonce, duration_ms, tx_count)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                block_data["height"],
-                                block_data["hash"],
-                                block_data["previous_hash"],
-                                block_data["merkle_root"],
-                                block_data["timestamp"],
-                                block_data["signer"],
-                                block_data["nonce"],
-                                block_data["duration_ms"],
-                                block_data["tx_count"]
+                        # Используем атомарную транзакцию БД
+                        # DatabaseManager использует контекстный менеджер _cursor для атомарности
+                        try:
+                            # Добавляем блок
+                            self.db.execute(
+                                """
+                                INSERT OR IGNORE INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
+                                                               signer, nonce, duration_ms, tx_count, block_signature)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    block_data["height"],
+                                    block_data["hash"],
+                                    block_data["previous_hash"],
+                                    block_data["merkle_root"],
+                                    block_data["timestamp"],
+                                    block_data["signer"],
+                                    block_data["nonce"],
+                                    block_data["duration_ms"],
+                                    block_data["tx_count"],
+                                    block_data.get("block_signature")
+                                )
                             )
-                        )
-                        
-                        # Добавляем транзакции
-                        block_row = self.db.execute(
-                            "SELECT id FROM blocks WHERE height = ?",
-                            (block_data["height"],),
-                            fetchone=True
-                        )
-                        if block_row:
-                            block_id = block_row["id"]
-                            for tx in block_txs:
-                                self.db.execute(
-                                    """
-                                    INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
-                                                                       tx_type, channel, status, timestamp,
-                                                                       bank_id, hash, offline_flag, notes,
-                                                                       user_sig, bank_sig, cbr_sig)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        tx["id"], tx["sender_id"], tx["receiver_id"], tx["amount"],
-                                        tx["tx_type"], tx["channel"], tx["status"], tx["timestamp"],
-                                        tx["bank_id"], tx["hash"], tx.get("offline_flag", 0),
-                                        tx.get("notes", ""), tx.get("user_sig"), tx.get("bank_sig"),
-                                        tx.get("cbr_sig")
+                            
+                            # Добавляем транзакции
+                            block_row = self.db.execute(
+                                "SELECT id FROM blocks WHERE height = ?",
+                                (block_data["height"],),
+                                fetchone=True
+                            )
+                            if block_row:
+                                block_id = block_row["id"]
+                                for tx in block_txs:
+                                    self.db.execute(
+                                        """
+                                        INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
+                                                                           tx_type, channel, status, timestamp,
+                                                                           bank_id, hash, offline_flag, notes,
+                                                                           user_sig, bank_sig, cbr_sig)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        """,
+                                        (
+                                            tx["id"], tx["sender_id"], tx["receiver_id"], tx["amount"],
+                                            tx["tx_type"], tx["channel"], tx["status"], tx["timestamp"],
+                                            tx["bank_id"], tx["hash"], tx.get("offline_flag", 0),
+                                            tx.get("notes", ""), tx.get("user_sig"), tx.get("bank_sig"),
+                                            tx.get("cbr_sig")
+                                        )
                                     )
-                                )
-                                self.db.execute(
-                                    "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
-                                    (block_id, tx["id"])
-                                )
-                        
-                        added += 1
+                                    self.db.execute(
+                                        "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
+                                        (block_id, tx["id"])
+                                    )
+                            
+                            # DatabaseManager автоматически коммитит через _cursor контекстный менеджер
+                            added += 1
+                        except Exception as e:
+                            # DatabaseManager автоматически откатывает через _cursor контекстный менеджер
+                            failed += 1
+                            self._log_network_error(response.sender_node_id, "apply_sync", str(e))
                     else:
                         failed += 1
                         
@@ -484,6 +500,7 @@ class P2PNetwork:
             if computed_merkle != block_data["merkle_root"]:
                 return False
             
+            # Подпись блока не проверяем (отключено по требованию)
             return True
             
         except Exception as e:

@@ -274,6 +274,7 @@ class DatabaseManager:
                 "nonce": "INTEGER",
                 "duration_ms": "REAL",
                 "tx_count": "INTEGER",
+                "block_signature": "TEXT",
             },
         )
         self._ensure_columns(
