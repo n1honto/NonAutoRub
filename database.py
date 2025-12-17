@@ -74,6 +74,7 @@ class DatabaseManager:
                 name TEXT NOT NULL,
                 user_type TEXT NOT NULL,
                 bank_id INTEGER,
+                wallet_id INTEGER,
                 fiat_balance REAL DEFAULT 10000,
                 digital_balance REAL DEFAULT 0,
                 wallet_status TEXT DEFAULT 'CLOSED',
@@ -81,8 +82,9 @@ class DatabaseManager:
                 offline_status TEXT DEFAULT 'CLOSED',
                 offline_activated_at TEXT,
                 offline_expires_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (bank_id) REFERENCES banks(id)
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                -- bank_id не имеет FOREIGN KEY, т.к. таблица banks в БД банков пустая (банки хранятся в ЦБ)
+                -- wallet_id не имеет FOREIGN KEY, т.к. ссылается на таблицу wallets в другой БД (ЦБ)
             );
             """,
             """
@@ -111,9 +113,8 @@ class DatabaseManager:
                 user_sig TEXT,
                 bank_sig TEXT,
                 cbr_sig TEXT,
-                FOREIGN KEY (sender_id) REFERENCES users(id),
-                FOREIGN KEY (receiver_id) REFERENCES users(id),
                 FOREIGN KEY (bank_id) REFERENCES banks(id)
+                -- sender_id и receiver_id не имеют FOREIGN KEY, т.к. users хранятся в БД банков, а не в ЦБ
             );
             """,
             """
@@ -152,9 +153,8 @@ class DatabaseManager:
                 status TEXT NOT NULL,
                 last_execution TEXT,
                 required_balance REAL NOT NULL,
-                FOREIGN KEY (creator_id) REFERENCES users(id),
-                FOREIGN KEY (beneficiary_id) REFERENCES users(id),
                 FOREIGN KEY (bank_id) REFERENCES banks(id)
+                -- creator_id и beneficiary_id не имеют FOREIGN KEY, т.к. users хранятся в БД банков, а не в ЦБ
             );
             """,
             """
@@ -218,7 +218,7 @@ class DatabaseManager:
                 locked_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 spent_at TEXT,
-                FOREIGN KEY (owner_id) REFERENCES users(id),
+                FOREIGN KEY (owner_id) REFERENCES wallets(id),
                 FOREIGN KEY (created_tx_id) REFERENCES transactions(id),
                 FOREIGN KEY (spent_tx_id) REFERENCES transactions(id),
                 FOREIGN KEY (locked_by_tx_id) REFERENCES transactions(id)
@@ -254,6 +254,21 @@ class DatabaseManager:
                 key BLOB NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(owner_type, owner_id)
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address TEXT UNIQUE NOT NULL,
+                bank_id INTEGER NOT NULL,
+                balance REAL DEFAULT 0,
+                wallet_status TEXT DEFAULT 'CLOSED',
+                offline_balance REAL DEFAULT 0,
+                offline_status TEXT DEFAULT 'CLOSED',
+                offline_activated_at TEXT,
+                offline_expires_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (bank_id) REFERENCES banks(id)
             );
             """,
         ]
@@ -295,6 +310,13 @@ class DatabaseManager:
             "failed_transactions",
             {
                 "contract_id": "TEXT",
+            },
+        )
+        # Добавляем wallet_id в таблицу users (для БД банков)
+        self._ensure_columns(
+            "users",
+            {
+                "wallet_id": "INTEGER",
             },
         )
         self._ensure_columns(

@@ -128,82 +128,90 @@ class P2PNetwork:
             # Открываем БД целевого узла
             target_db = DatabaseManager(target_node.db_path)
             
-            # Проверяем, нет ли уже такого блока
-            existing = target_db.execute(
-                "SELECT id FROM blocks WHERE height = ?",
-                (message.block_data["height"],),
-                fetchone=True
-            )
-            if existing:
-                # Блок уже есть, считаем успешным
-                return True
-            
-            # Валидируем блок перед добавлением
-            if not self._validate_block_for_node(message, target_node):
-                return False
-            
-            # Добавляем блок в БД целевого узла
-            target_db.execute(
-                """
-                INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
-                                   signer, nonce, duration_ms, tx_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    message.block_data["height"],
-                    message.block_data["hash"],
-                    message.block_data["previous_hash"],
-                    message.block_data["merkle_root"],
-                    message.block_data["timestamp"],
-                    message.block_data["signer"],
-                    message.block_data["nonce"],
-                    message.block_data["duration_ms"],
-                    message.block_data["tx_count"]
+            # Отключаем foreign keys при репликации, т.к. sender_id и receiver_id
+            # ссылаются на users в БД банков, а не в ЦБ
+            target_db.execute("PRAGMA foreign_keys = OFF")
+            try:
+                # Проверяем, нет ли уже такого блока
+                existing = target_db.execute(
+                    "SELECT id FROM blocks WHERE height = ?",
+                    (message.block_data["height"],),
+                    fetchone=True
                 )
-            )
-            
-            # Получаем ID блока
-            block_row = target_db.execute(
-                "SELECT id FROM blocks WHERE height = ?",
-                (message.block_data["height"],),
-                fetchone=True
-            )
-            block_id = block_row["id"]
-            
-            # Добавляем транзакции
-            for tx in message.transactions:
+                if existing:
+                    # Блок уже есть, считаем успешным
+                    target_db.execute("PRAGMA foreign_keys = ON")
+                    return True
+                
+                # Валидируем блок перед добавлением
+                if not self._validate_block_for_node(message, target_node):
+                    target_db.execute("PRAGMA foreign_keys = ON")
+                    return False
+                
+                # Добавляем блок в БД целевого узла
                 target_db.execute(
                     """
-                    INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
-                                                       tx_type, channel, status, timestamp,
-                                                       bank_id, hash, offline_flag, notes,
-                                                       user_sig, bank_sig, cbr_sig)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
+                                       signer, nonce, duration_ms, tx_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        tx["id"],
-                        tx["sender_id"],
-                        tx["receiver_id"],
-                        tx["amount"],
-                        tx["tx_type"],
-                        tx["channel"],
-                        tx["status"],
-                        tx["timestamp"],
-                        tx["bank_id"],
-                        tx["hash"],
-                        tx.get("offline_flag", 0),
-                        tx.get("notes", ""),
-                        tx.get("user_sig"),
-                        tx.get("bank_sig"),
-                        tx.get("cbr_sig")
+                        message.block_data["height"],
+                        message.block_data["hash"],
+                        message.block_data["previous_hash"],
+                        message.block_data["merkle_root"],
+                        message.block_data["timestamp"],
+                        message.block_data["signer"],
+                        message.block_data["nonce"],
+                        message.block_data["duration_ms"],
+                        message.block_data["tx_count"]
                     )
                 )
                 
-                # Связываем транзакцию с блоком
-                target_db.execute(
-                    "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
-                    (block_id, tx["id"])
+                # Получаем ID блока
+                block_row = target_db.execute(
+                    "SELECT id FROM blocks WHERE height = ?",
+                    (message.block_data["height"],),
+                    fetchone=True
                 )
+                block_id = block_row["id"]
+                
+                # Добавляем транзакции
+                for tx in message.transactions:
+                    target_db.execute(
+                        """
+                        INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
+                                                           tx_type, channel, status, timestamp,
+                                                           bank_id, hash, offline_flag, notes,
+                                                           user_sig, bank_sig, cbr_sig)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tx["id"],
+                            tx["sender_id"],
+                            tx["receiver_id"],
+                            tx["amount"],
+                            tx["tx_type"],
+                            tx["channel"],
+                            tx["status"],
+                            tx["timestamp"],
+                            tx["bank_id"],
+                            tx["hash"],
+                            tx.get("offline_flag", 0),
+                            tx.get("notes", ""),
+                            tx.get("user_sig"),
+                            tx.get("bank_sig"),
+                            tx.get("cbr_sig")
+                        )
+                    )
+                    
+                    # Связываем транзакцию с блоком
+                    target_db.execute(
+                        "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
+                        (block_id, tx["id"])
+                    )
+            finally:
+                target_db.execute("PRAGMA foreign_keys = ON")
             
             # Обновляем информацию об узле
             self.node_manager.sync_node_info(

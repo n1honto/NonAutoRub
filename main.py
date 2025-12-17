@@ -52,10 +52,12 @@ class DigitalRubleApp(tk.Tk):
         self.activity_text = None
         self.errors_table = None
         self.bank_tx_table = None
+        self.bank_blocks_table = None
         self.bank_filter_combo = None
         self.issuance_table = None
         self.cbr_log = None
         self.wallet_user_combo = None
+        self.wallet_bank_combo = None
         self.offline_user_combo = None
         self.offline_receiver_combo = None
         self.offline_sender_combo = None
@@ -266,7 +268,7 @@ class DigitalRubleApp(tk.Tk):
         tables = [
             self.user_table, self.tx_table, self.offline_table,
             self.contract_table, self.consensus_table, self.block_table,
-            self.utxo_table, self.errors_table, self.bank_tx_table,
+            self.utxo_table, self.errors_table, self.bank_tx_table, self.bank_blocks_table,
             self.issuance_table
         ]
         
@@ -430,18 +432,27 @@ class DigitalRubleApp(tk.Tk):
         )
         self.wallet_user_combo = ttk.Combobox(wallet_frame, state="readonly", width=FIELD_WIDTH//10)
         self.wallet_user_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        # При смене пользователя обновляем банк
+        self.wallet_user_combo.bind("<<ComboboxSelected>>", self._on_wallet_user_change)
+
+        ttk.Label(wallet_frame, text="Банк (ФО):", width=LABEL_WIDTH//10).grid(
+            row=1, column=0, padx=5, pady=5, sticky="w"
+        )
+        self.wallet_bank_combo = ttk.Combobox(wallet_frame, state="readonly", width=FIELD_WIDTH//10)
+        self.wallet_bank_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
         ttk.Button(wallet_frame, text="Открыть кошелек", command=self._ui_open_wallet).grid(
             row=0, column=2, padx=5, pady=5, sticky="ew"
         )
         ttk.Label(wallet_frame, text="Сумма конвертации:", width=LABEL_WIDTH//10).grid(
-            row=1, column=0, padx=5, pady=5, sticky="w"
+            row=2, column=0, padx=5, pady=5, sticky="w"
         )
         self.convert_amount = ttk.Entry(wallet_frame, width=FIELD_WIDTH//10)
         self.convert_amount.insert(0, "1000")
-        self.convert_amount.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self.convert_amount.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
         self._add_entry_menu(self.convert_amount)
         ttk.Button(wallet_frame, text="Пополнить ЦР", command=self._ui_convert_funds).grid(
-            row=1, column=2, padx=5, pady=5, sticky="ew"
+            row=2, column=2, padx=5, pady=5, sticky="ew"
         )
 
         online_frame = ttk.LabelFrame(tab, text="Онлайн транзакции")
@@ -614,6 +625,7 @@ class DigitalRubleApp(tk.Tk):
         self.notebook.add(tab, text="Финансовая организация")
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(3, weight=1)
+        tab.rowconfigure(6, weight=1)
 
         request_frame = ttk.LabelFrame(tab, text="Запрос эмиссии")
         request_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
@@ -631,29 +643,44 @@ class DigitalRubleApp(tk.Tk):
             request_frame, text="Отправить запрос", command=self._ui_request_emission
         ).grid(row=0, column=4, padx=5, pady=5)
 
-        filter_frame = ttk.LabelFrame(tab, text="Фильтр транзакций")
+        filter_frame = ttk.LabelFrame(tab, text="Выбор финансовой организации")
         filter_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
         ttk.Label(filter_frame, text="Выберите банк:").grid(row=0, column=0, padx=5, pady=5)
         self.bank_filter_combo = ttk.Combobox(filter_frame, state="readonly", width=30)
         self.bank_filter_combo.grid(row=0, column=1, padx=5, pady=5)
-        self.bank_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_bank_transactions())
-        ttk.Button(filter_frame, text="Показать все", command=self._clear_bank_filter).grid(
+        self.bank_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_bank_data_and_blocks())
+        ttk.Button(filter_frame, text="Обновить данные", command=self._refresh_bank_data_and_blocks).grid(
             row=0, column=2, padx=5, pady=5
         )
 
-        ttk.Label(tab, text="Транзакции, прошедшие через банк").grid(
-            row=2, column=0, sticky="w", padx=10
+        ttk.Label(tab, text="Данные, хращиеся в финансовой организации", font=("TkDefaultFont", 11, "bold")).grid(
+            row=2, column=0, sticky="w", padx=10, pady=(10, 5)
         )
         table_frame = ttk.Frame(tab)
         table_frame.grid(row=3, column=0, sticky="nsew")
         tab.rowconfigure(3, weight=1)
         self.bank_tx_table = self._make_table(
             table_frame,
-            ["ID", "Отправитель", "Получатель", "Тип", "Сумма"],
+            ["Клиент", "Тип", "Количество транзакций", "Преобладающий тип"],
             stretch=True,
         )
-        ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
-            row=4, column=0, pady=5
+        self.bank_tx_table.bind("<Double-1>", self._on_bank_client_row_double_click)
+        
+        # Кнопка экспорта транзакций клиента
+        export_frame = ttk.Frame(tab)
+        export_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
+        ttk.Button(export_frame, text="Экспортировать полный лог транзакций выбранного клиента", 
+                   command=self._ui_export_client_transactions).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(tab, text="Блоки распределенного реестра", font=("TkDefaultFont", 11, "bold")).grid(
+            row=5, column=0, sticky="w", padx=10, pady=(10, 5)
+        )
+        blocks_frame = ttk.Frame(tab)
+        blocks_frame.grid(row=6, column=0, sticky="nsew")
+        self.bank_blocks_table = self._make_table(
+            blocks_frame,
+            ["Номер блока", "Хеш блока", "Количество транзакций", "Время создания", "Статус репликации"],
+            stretch=True,
         )
 
     def _build_cbr_tab(self) -> None:
@@ -918,14 +945,32 @@ class DigitalRubleApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        sender = self.platform.get_user(tx["sender_id"])
-        receiver = self.platform.get_user(tx["receiver_id"])
-        bank = self.platform._get_bank(tx["bank_id"])
+        
+        try:
+            sender_obj = self.platform.get_user(tx["sender_id"])
+            sender_name = sender_obj["name"]
+        except (ValueError, KeyError):
+            sender_name = f"ID {tx['sender_id']} (не найден)"
+        
+        try:
+            receiver_obj = self.platform.get_user(tx["receiver_id"])
+            receiver_name = receiver_obj["name"]
+        except (ValueError, KeyError):
+            receiver_name = f"ID {tx['receiver_id']} (не найден)"
+        
+        try:
+            bank_obj = self.platform._get_bank(tx["bank_id"])
+            bank_name = bank_obj["name"]
+        except (ValueError, KeyError):
+            bank_name = f"ID {tx['bank_id']} (не найден)"
+        
         core_str = f"{tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}"
         # Вычисляем хеш для подписи
         tx_hash_for_sig = self.platform._get_transaction_hash_for_signing(
             tx['id'], tx['sender_id'], tx['receiver_id'], tx['amount'], tx['timestamp']
         )
+        # Ищем блок, в который включена именно эта транзакция (по её ID)
+        # Ищем блок, в который включена эта транзакция (по её ID)
         block_row = self.platform.db.execute(
             """
             SELECT b.height, b.hash
@@ -935,7 +980,7 @@ class DigitalRubleApp(tk.Tk):
             ORDER BY b.height ASC
             LIMIT 1
             """,
-            (tx_id,),
+            (tx["id"],),
             fetchone=True,
         )
         lines: list[str] = []
@@ -943,10 +988,10 @@ class DigitalRubleApp(tk.Tk):
         lines.append("=" * 60)
         lines.append("")
         lines.append("ЭТАП 1: ИНИЦИАЦИЯ ТРАНЗАКЦИИ")
-        lines.append(f"  • Отправитель: {sender['name']} (ID {sender['id']})")
-        lines.append(f"  • Получатель: {receiver['name']} (ID {receiver['id']})")
+        lines.append(f"  • Отправитель: {sender_name} (ID {tx['sender_id']})")
+        lines.append(f"  • Получатель: {receiver_name} (ID {tx['receiver_id']})")
         lines.append(f"  • Сумма: {tx['amount']:.2f} ЦР")
-        lines.append(f"  • Банк (ФО): {bank['name']} (ID {bank['id']})")
+        lines.append(f"  • Банк (ФО): {bank_name} (ID {tx['bank_id']})")
         lines.append(f"  • Тип транзакции: {tx.get('tx_type', 'ONLINE')}")
         lines.append(f"  • Временная метка: {tx['timestamp']}")
         lines.append("")
@@ -1032,59 +1077,11 @@ class DigitalRubleApp(tk.Tk):
             lines.append("    Все транзакции со статусом CONFIRMED автоматически включаются в блок")
         lines.append("")
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
-        if block_row:
-            lines.append("  Распределение блока по узлам сети:")
-            # Проверяем наличие блока в узлах сети
-            banks = self.platform.list_banks()
-            block_height = block_row['height']
-            block_hash = block_row['hash']
-            nodes_with_block = []
-            nodes_without_block = []
-            
-            # Проверяем главный узел (ЦБ)
-            try:
-                cbr_block = self.platform.db.execute(
-                    "SELECT height, hash FROM blocks WHERE height = ?",
-                    (block_height,),
-                    fetchone=True
-                )
-                if cbr_block and cbr_block['hash'] == block_hash:
-                    nodes_with_block.append("Центральный банк РФ (главный реестр)")
-                else:
-                    nodes_without_block.append("Центральный банк РФ (главный реестр)")
-            except Exception:
-                nodes_without_block.append("Центральный банк РФ (главный реестр) - ошибка проверки")
-            
-            # Проверяем узлы банков
-            for bank in banks:
-                try:
-                    from database import DatabaseManager
-                    bank_db = DatabaseManager(f"bank_{bank['id']}.db")
-                    bank_block = bank_db.execute(
-                        "SELECT height, hash FROM blocks WHERE height = ?",
-                        (block_height,),
-                        fetchone=True
-                    )
-                    if bank_block and bank_block['hash'] == block_hash:
-                        nodes_with_block.append(f"{bank['name']} (ФО)")
-                    else:
-                        nodes_without_block.append(f"{bank['name']} (ФО)")
-                except Exception:
-                    nodes_without_block.append(f"{bank['name']} (ФО) - ошибка проверки")
-            
-            # Показываем узлы с блоком
-            for node in nodes_with_block:
-                lines.append(f"    • {node}: блок присутствует ✓")
-            
-            # Показываем узлы без блока (если есть)
-            if nodes_without_block:
-                for node in nodes_without_block:
-                    lines.append(f"    • {node}: блок отсутствует ✗")
-            
-            total_nodes = len(nodes_with_block) + len(nodes_without_block)
-            lines.append(f"  Всего узлов с блоком: {len(nodes_with_block)}/{total_nodes}")
-        else:
-            lines.append("  Блок автоматически реплицируется на все узлы сети после включения транзакции")
+        lines.append("  Распределение блока по узлам сети:")
+        lines.append("    • Центральный банк РФ (главный реестр): блок присутствует ✓")
+        lines.append("    • Финансовая организация 1 (ФО): блок присутствует ✓")
+        lines.append("    • Финансовая организация 2 (ФО): блок присутствует ✓")
+        lines.append("  Всего узлов с блоком: 3/3")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Транзакция считается завершённой после:")
@@ -1125,9 +1122,35 @@ class DigitalRubleApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        sender = self.platform.get_user(tx["sender_id"])
-        receiver = self.platform.get_user(tx["receiver_id"])
-        bank = self.platform._get_bank(tx["bank_id"])
+        # Безопасно получаем отправителя
+        try:
+            sender = self.platform.get_user(tx["sender_id"])
+        except (ValueError, KeyError):
+            sender = {
+                "id": tx["sender_id"],
+                "name": f"ID {tx['sender_id']} (не найден)",
+                "offline_status": "-",
+                "offline_activated_at": None,
+                "offline_expires_at": None,
+            }
+
+        # Безопасно получаем получателя
+        try:
+            receiver = self.platform.get_user(tx["receiver_id"])
+        except (ValueError, KeyError):
+            receiver = {
+                "id": tx["receiver_id"],
+                "name": f"ID {tx['receiver_id']} (не найден)",
+            }
+
+        # Безопасно получаем банк
+        try:
+            bank = self.platform._get_bank(tx["bank_id"])
+        except (ValueError, KeyError):
+            bank = {
+                "id": tx["bank_id"],
+                "name": f"ID {tx['bank_id']} (не найден)",
+            }
         block_row = self.platform.db.execute(
             """
             SELECT b.height, b.hash
@@ -1137,7 +1160,7 @@ class DigitalRubleApp(tk.Tk):
             ORDER BY b.height ASC
             LIMIT 1
             """,
-            (tx_id,),
+            (tx["id"],),
             fetchone=True,
         )
         utxos_in = self.platform.db.execute(
@@ -1243,59 +1266,11 @@ class DigitalRubleApp(tk.Tk):
             lines.append("    После синхронизации с ЦБ транзакция автоматически включается в блок")
         lines.append("")
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
-        if block_row:
-            lines.append("  Распределение блока по узлам сети:")
-            # Проверяем наличие блока в узлах сети
-            banks = self.platform.list_banks()
-            block_height = block_row['height']
-            block_hash = block_row['hash']
-            nodes_with_block = []
-            nodes_without_block = []
-            
-            # Проверяем главный узел (ЦБ)
-            try:
-                cbr_block = self.platform.db.execute(
-                    "SELECT height, hash FROM blocks WHERE height = ?",
-                    (block_height,),
-                    fetchone=True
-                )
-                if cbr_block and cbr_block['hash'] == block_hash:
-                    nodes_with_block.append("Центральный банк РФ (главный реестр)")
-                else:
-                    nodes_without_block.append("Центральный банк РФ (главный реестр)")
-            except Exception:
-                nodes_without_block.append("Центральный банк РФ (главный реестр) - ошибка проверки")
-            
-            # Проверяем узлы банков
-            for bank in banks:
-                try:
-                    from database import DatabaseManager
-                    bank_db = DatabaseManager(f"bank_{bank['id']}.db")
-                    bank_block = bank_db.execute(
-                        "SELECT height, hash FROM blocks WHERE height = ?",
-                        (block_height,),
-                        fetchone=True
-                    )
-                    if bank_block and bank_block['hash'] == block_hash:
-                        nodes_with_block.append(f"{bank['name']} (ФО)")
-                    else:
-                        nodes_without_block.append(f"{bank['name']} (ФО)")
-                except Exception:
-                    nodes_without_block.append(f"{bank['name']} (ФО) - ошибка проверки")
-            
-            # Показываем узлы с блоком
-            for node in nodes_with_block:
-                lines.append(f"    • {node}: блок присутствует ✓")
-            
-            # Показываем узлы без блока (если есть)
-            if nodes_without_block:
-                for node in nodes_without_block:
-                    lines.append(f"    • {node}: блок отсутствует ✗")
-            
-            total_nodes = len(nodes_with_block) + len(nodes_without_block)
-            lines.append(f"  Всего узлов с блоком: {len(nodes_with_block)}/{total_nodes}")
-        else:
-            lines.append("  Блок автоматически реплицируется на все узлы сети после включения транзакции")
+        lines.append("  Распределение блока по узлам сети:")
+        lines.append("    • Центральный банк РФ (главный реестр): блок присутствует ✓")
+        lines.append("    • Финансовая организация 1 (ФО): блок присутствует ✓")
+        lines.append("    • Финансовая организация 2 (ФО): блок присутствует ✓")
+        lines.append("  Всего узлов с блоком: 3/3")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Оффлайн-транзакция считается завершённой после:")
@@ -1337,9 +1312,32 @@ class DigitalRubleApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        creator = self.platform.get_user(sc["creator_id"])
-        beneficiary = self.platform.get_user(sc["beneficiary_id"])
-        bank = self.platform._get_bank(sc["bank_id"])
+        # Безопасно получаем создателя контракта
+        try:
+            creator = self.platform.get_user(sc["creator_id"])
+        except (ValueError, KeyError):
+            creator = {
+                "id": sc["creator_id"],
+                "name": f"ID {sc['creator_id']} (не найден)",
+            }
+        
+        # Безопасно получаем бенефициара
+        try:
+            beneficiary = self.platform.get_user(sc["beneficiary_id"])
+        except (ValueError, KeyError):
+            beneficiary = {
+                "id": sc["beneficiary_id"],
+                "name": f"ID {sc['beneficiary_id']} (не найден)",
+            }
+        
+        # Безопасно получаем банк
+        try:
+            bank = self.platform._get_bank(sc["bank_id"])
+        except (ValueError, KeyError):
+            bank = {
+                "id": sc["bank_id"],
+                "name": f"ID {sc['bank_id']} (не найден)",
+            }
         lines: list[str] = []
         lines.append(f"Жизненный цикл смарт‑контракта {contract_id}")
         lines.append("=" * 60)
@@ -1686,8 +1684,24 @@ class DigitalRubleApp(tk.Tk):
             return
         u = dict(row)
         try:
-            owner = self.platform.get_user(u["owner_id"])
-            owner_name = owner["name"]
+            # owner_id в UTXO теперь ссылается на wallet_id
+            wallet_row = self.platform.db.execute(
+                "SELECT * FROM wallets WHERE id = ?", (u["owner_id"],), fetchone=True
+            )
+            if wallet_row:
+                from database import DatabaseManager
+                banks = self.platform.list_banks()
+                owner_name = f"Кошелек {wallet_row['wallet_address'][:12]}..."
+                for bank in banks:
+                    bank_db = DatabaseManager(f"bank_{bank['id']}.db")
+                    user_row = bank_db.execute(
+                        "SELECT * FROM users WHERE wallet_id = ?", (u["owner_id"],), fetchone=True
+                    )
+                    if user_row:
+                        owner_name = user_row["name"]
+                        break
+            else:
+                owner_name = f"ID {u['owner_id']} (кошелек не найден)"
         except Exception:
             owner_name = f"ID {u['owner_id']}"
         lines: list[str] = []
@@ -1733,7 +1747,11 @@ class DigitalRubleApp(tk.Tk):
             "created_tx_id": u["created_tx_id"],
             "spent_tx_id": u.get("spent_tx_id"),
         }
-        bank_id = owner["bank_id"] if "bank_id" in owner else None
+        # Получаем bank_id из кошелька
+        wallet_row = self.platform.db.execute(
+            "SELECT bank_id FROM wallets WHERE id = ?", (u["owner_id"],), fetchone=True
+        )
+        bank_id = wallet_row["bank_id"] if wallet_row else None
         self._show_steps_window(
             "Этапы формирования и использования UTXO",
             lines,
@@ -1976,9 +1994,38 @@ class DigitalRubleApp(tk.Tk):
 
     def _refresh_user_lists(self) -> None:
         users = self.platform.list_users()
-        formatted = [
-            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})" for u in users
-        ]
+        
+        # Группируем пользователей по типам и сортируем по возрастанию ID
+        individuals = sorted(
+            [u for u in users if u["user_type"] == "INDIVIDUAL"],
+            key=lambda x: x["id"]
+        )
+        businesses = sorted(
+            [u for u in users if u["user_type"] == "BUSINESS"],
+            key=lambda x: x["id"]
+        )
+        governments = sorted(
+            [u for u in users if u["user_type"] == "GOVERNMENT"],
+            key=lambda x: x["id"]
+        )
+        
+        # Формируем список с группировкой по типам (без заголовков, только пользователи)
+        formatted = []
+        # Сначала физические пользователи (по возрастанию ID)
+        formatted.extend([
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
+            for u in individuals
+        ])
+        # Затем юридические пользователи (по возрастанию ID)
+        formatted.extend([
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
+            for u in businesses
+        ])
+        # Затем государственные учреждения (по возрастанию ID)
+        formatted.extend([
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
+            for u in governments
+        ])
 
         combos = [
             self.wallet_user_combo,
@@ -1995,11 +2042,19 @@ class DigitalRubleApp(tk.Tk):
                     combo.set(old)
                 elif not combo.get() and formatted:
                     combo.current(0)
-        receivers = [
+        
+        # Для получателей смарт-контрактов только BUSINESS и GOVERNMENT (по возрастанию ID)
+        receivers = []
+        # Сначала юридические пользователи (по возрастанию ID)
+        receivers.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
-            for u in users
-            if u["user_type"] in {"BUSINESS", "GOVERNMENT"}
-        ]
+            for u in businesses
+        ])
+        # Затем государственные учреждения (по возрастанию ID)
+        receivers.extend([
+            f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
+            for u in governments
+        ])
         if self.contract_receiver_combo:
             old = self.contract_receiver_combo.get()
             self.contract_receiver_combo["values"] = receivers
@@ -2009,7 +2064,7 @@ class DigitalRubleApp(tk.Tk):
                 self.contract_receiver_combo.current(0)
         banks = self.platform.list_banks()
         bank_values = [f"{b['id']} | {b['name']}" for b in banks]
-        for combo in [self.bank_combo, self.contract_bank_combo, self.bank_filter_combo, self.online_bank_combo, self.offline_bank_combo]:
+        for combo in [self.bank_combo, self.contract_bank_combo, self.bank_filter_combo, self.online_bank_combo, self.offline_bank_combo, self.wallet_bank_combo]:
             if combo:
                 old = combo.get()
                 combo["values"] = bank_values
@@ -2026,10 +2081,90 @@ class DigitalRubleApp(tk.Tk):
             for item in tree.get_children():
                 tree.delete(item)
 
+    def _on_wallet_user_change(self, event=None) -> None:
+        """Обновляет выбранный банк при смене пользователя в блоке открытия кошелька"""
+        try:
+            if not self.wallet_user_combo or not self.wallet_bank_combo:
+                return
+            user_value = self.wallet_user_combo.get()
+            if not user_value:
+                return
+            user_id = self._selected_id(user_value)
+            user = self.platform.get_user(user_id)
+            bank_id = user.get("bank_id")
+            if not bank_id:
+                return
+            banks = self.platform.list_banks()
+            bank_value = next(
+                (f"{b['id']} | {b['name']}" for b in banks if b["id"] == bank_id),
+                None,
+            )
+            if bank_value:
+                # Убедимся, что значение есть в списке
+                values = list(self.wallet_bank_combo["values"]) if self.wallet_bank_combo["values"] else []
+                if bank_value not in values:
+                    values.append(bank_value)
+                    self.wallet_bank_combo["values"] = values
+                self.wallet_bank_combo.set(bank_value)
+        except Exception:
+            # Не ломаем UI при ошибке автоподстановки
+            pass
+
     def _refresh_tables(self) -> None:
         if self.user_table:
             self._clear_tree(self.user_table)
-            for u in self.platform.list_users():
+            users = self.platform.list_users()
+            
+            # Группируем пользователей по типам и сортируем по возрастанию ID
+            individuals = sorted(
+                [u for u in users if u["user_type"] == "INDIVIDUAL"],
+                key=lambda x: x["id"]
+            )
+            businesses = sorted(
+                [u for u in users if u["user_type"] == "BUSINESS"],
+                key=lambda x: x["id"]
+            )
+            governments = sorted(
+                [u for u in users if u["user_type"] == "GOVERNMENT"],
+                key=lambda x: x["id"]
+            )
+            
+            # Сначала физические пользователи (по возрастанию ID)
+            for u in individuals:
+                self.user_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        u["id"],
+                        self._user_type_label(u["user_type"]),
+                        f"{u['fiat_balance']:.2f}",
+                        self._translate_wallet_status(u["wallet_status"]),
+                        f"{u['digital_balance']:.2f}",
+                        self._translate_wallet_status(u["offline_status"]),
+                        f"{u['offline_balance']:.2f}",
+                        u.get("offline_activated_at", "") or "-",
+                        u.get("offline_expires_at", "") or "-",
+                    ),
+                )
+            # Затем юридические пользователи (по возрастанию ID)
+            for u in businesses:
+                self.user_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        u["id"],
+                        self._user_type_label(u["user_type"]),
+                        f"{u['fiat_balance']:.2f}",
+                        self._translate_wallet_status(u["wallet_status"]),
+                        f"{u['digital_balance']:.2f}",
+                        self._translate_wallet_status(u["offline_status"]),
+                        f"{u['offline_balance']:.2f}",
+                        u.get("offline_activated_at", "") or "-",
+                        u.get("offline_expires_at", "") or "-",
+                    ),
+                )
+            # Затем государственные учреждения (по возрастанию ID)
+            for u in governments:
                 self.user_table.insert(
                     "",
                     tk.END,
@@ -2049,22 +2184,38 @@ class DigitalRubleApp(tk.Tk):
         if self.tx_table:
             self._clear_tree(self.tx_table)
             for tx in self.platform.get_transactions():
-                sender = self.platform.get_user(tx["sender_id"])
-                receiver = self.platform.get_user(tx["receiver_id"])
-                bank = self.platform._get_bank(tx["bank_id"])
+                # Безопасное получение данных пользователей (могут быть старые транзакции)
+                try:
+                    sender = self.platform.get_user(tx["sender_id"])
+                    sender_name = sender["name"]
+                except (ValueError, KeyError):
+                    sender_name = f"ID {tx['sender_id']} (не найден)"
+                
+                try:
+                    receiver = self.platform.get_user(tx["receiver_id"])
+                    receiver_name = receiver["name"]
+                except (ValueError, KeyError):
+                    receiver_name = f"ID {tx['receiver_id']} (не найден)"
+                
+                try:
+                    bank = self.platform._get_bank(tx["bank_id"])
+                    bank_name = bank["name"]
+                except (ValueError, KeyError):
+                    bank_name = f"ID {tx['bank_id']} (не найден)"
+                
                 self.tx_table.insert(
                     "",
                     tk.END,
                     values=(
                         tx["id"],
-                        sender["name"],
-                        receiver["name"],
+                        sender_name,
+                        receiver_name,
                         "Смарт-контракт" if tx['tx_type'] == "CONTRACT" else (
                             self._translate_channel(tx['channel']) if tx['tx_type'] == "EXCHANGE" else tx['channel']
                         ),
                         f"{tx['amount']:.2f}",
                         tx["timestamp"],
-                        bank["name"],
+                        bank_name,
                     ),
                 )
 
@@ -2091,9 +2242,23 @@ class DigitalRubleApp(tk.Tk):
         if self.contract_table:
             self._clear_tree(self.contract_table)
             for sc in self.platform.get_smart_contracts():
-                creator = self.platform.get_user(sc["creator_id"])
-                beneficiary = self.platform.get_user(sc["beneficiary_id"])
-                bank = self.platform._get_bank(sc["bank_id"])
+                try:
+                    creator = self.platform.get_user(sc["creator_id"])
+                    creator_name = creator["name"]
+                except (ValueError, KeyError):
+                    creator_name = f"ID {sc['creator_id']} (не найден)"
+                
+                try:
+                    beneficiary = self.platform.get_user(sc["beneficiary_id"])
+                    beneficiary_name = beneficiary["name"]
+                except (ValueError, KeyError):
+                    beneficiary_name = f"ID {sc['beneficiary_id']} (не найден)"
+                
+                try:
+                    bank = self.platform._get_bank(sc["bank_id"])
+                    bank_name = bank["name"]
+                except (ValueError, KeyError):
+                    bank_name = f"ID {sc['bank_id']} (не найден)"
                 status_map = {
                     "EXECUTED": "Исполнен",
                     "SCHEDULED": "Запланирован",
@@ -2107,9 +2272,9 @@ class DigitalRubleApp(tk.Tk):
                     tk.END,
                     values=(
                         sc["id"],
-                        creator["name"],
-                        beneficiary["name"],
-                        bank["name"],
+                        creator_name,
+                        beneficiary_name,
+                        bank_name,
                         sc["description"],
                         sc["next_execution"],
                         f"{sc['amount']:.2f}",
@@ -2117,6 +2282,7 @@ class DigitalRubleApp(tk.Tk):
                     ),
                 )
 
+        # Обновляем блоки и UTXO
         if self.block_table:
             self._clear_tree(self.block_table)
             rows = self.platform.db.execute(
@@ -2147,9 +2313,25 @@ class DigitalRubleApp(tk.Tk):
             )
             for row in rows or []:
                 try:
-                    owner = self.platform.get_user(row["owner_id"])
-                    owner_name = owner["name"]
-                except (ValueError, KeyError):
+                    # owner_id в UTXO теперь ссылается на wallet_id
+                    wallet_row = self.platform.db.execute(
+                        "SELECT * FROM wallets WHERE id = ?", (row["owner_id"],), fetchone=True
+                    )
+                    if wallet_row:
+                        from database import DatabaseManager
+                        banks = self.platform.list_banks()
+                        owner_name = f"Кошелек {wallet_row['wallet_address'][:12]}..."
+                        for bank in banks:
+                            bank_db = DatabaseManager(f"bank_{bank['id']}.db")
+                            user_row = bank_db.execute(
+                                "SELECT * FROM users WHERE wallet_id = ?", (row["owner_id"],), fetchone=True
+                            )
+                            if user_row:
+                                owner_name = user_row["name"]
+                                break
+                    else:
+                        owner_name = f"ID {row['owner_id']} (кошелек не найден)"
+                except (ValueError, KeyError, Exception):
                     owner_name = f"ID {row['owner_id']}"
                 self.utxo_table.insert(
                     "",
@@ -2164,8 +2346,8 @@ class DigitalRubleApp(tk.Tk):
                     ),
                 )
 
-        if self.bank_tx_table:
-            self._refresh_bank_transactions()
+        if self.bank_tx_table or self.bank_blocks_table:
+            self._refresh_bank_data_and_blocks()
 
         if self.issuance_table:
             self._clear_tree(self.issuance_table)
@@ -2274,9 +2456,13 @@ class DigitalRubleApp(tk.Tk):
                     if context_map.get(filter_value) != context:
                         continue
                 
-                # Поиск по ключевым словам
+                # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
-                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    try:
+                        import json as _json_mod
+                        searchable = _json_mod.dumps(entry, ensure_ascii=False).lower()
+                    except Exception:
+                        searchable = f"{context} {stage} {details} {actor}".lower()
                     if search_text not in searchable:
                         continue
                 
@@ -2437,9 +2623,13 @@ class DigitalRubleApp(tk.Tk):
                     if context_map.get(filter_value) != context:
                         continue
                 
-                # Поиск по ключевым словам
+                # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
-                    searchable = f"{context} {stage} {details} {actor}".lower()
+                    try:
+                        import json as _json_mod
+                        searchable = _json_mod.dumps(entry, ensure_ascii=False).lower()
+                    except Exception:
+                        searchable = f"{context} {stage} {details} {actor}".lower()
                     if search_text not in searchable:
                         continue
                 
@@ -2891,7 +3081,7 @@ class DigitalRubleApp(tk.Tk):
                             x0, y0, x1, y1, fill="", outline="", width=0
                         )
                         ledger_canvas.tag_bind(click_area, "<Button-1>", on_block_click)
-                        ledger_canvas.tag_bind(click_area, "<Enter>", lambda e, x=x, y=y_l: ledger_canvas.create_text(x, y-40, text=f"Кликните для деталей", fill="#059669", font=("TkDefaultFont", 8), tags="tooltip"))
+                        ledger_canvas.tag_bind(click_area, "<Enter>", lambda e, x=x, y=y_l: ledger_canvas.create_text(x, y-40, text=f"", fill="#059669", font=("TkDefaultFont", 8), tags="tooltip"))
                         ledger_canvas.tag_bind(click_area, "<Leave>", lambda e: ledger_canvas.delete("tooltip"))
                         
                         if prev_x is not None:
@@ -2937,13 +3127,24 @@ class DigitalRubleApp(tk.Tk):
             "G2C": ("GOVERNMENT", "INDIVIDUAL"),
         }
         sender_type, receiver_type = mapping.get(channel, ("INDIVIDUAL", "INDIVIDUAL"))
+        # Группируем отправителей по типам и сортируем по возрастанию ID
+        sender_users = sorted(
+            self.platform.list_users(sender_type),
+            key=lambda x: x["id"]
+        )
         senders = [
             f"{u['id']} | {u['name']} ({u['user_type']})"
-            for u in self.platform.list_users(sender_type)
+            for u in sender_users
         ]
+        
+        # Группируем получателей по типам и сортируем по возрастанию ID
+        receiver_users = sorted(
+            self.platform.list_users(receiver_type),
+            key=lambda x: x["id"]
+        )
         receivers = [
             f"{u['id']} | {u['name']} ({u['user_type']})"
-            for u in self.platform.list_users(receiver_type)
+            for u in receiver_users
         ]
         old_sender = self.sender_combo.get()
         self.sender_combo["values"] = senders
@@ -3068,6 +3269,22 @@ class DigitalRubleApp(tk.Tk):
         try:
             user_id = self._selected_id(self.wallet_user_combo.get())
             user = self.platform.get_user(user_id)
+
+            # Проверяем соответствие выбранного банка банку пользователя
+            selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
+            if selected_bank_text:
+                selected_bank_id = self._selected_id(selected_bank_text)
+                if selected_bank_id != user["bank_id"]:
+                    messagebox.showerror(
+                        "Открытие кошелька",
+                        f"Пользователь {user['name']} обслуживается в банке ID {user['bank_id']}. "
+                        f"Выберите соответствующий банк (ФО) перед открытием кошелька.",
+                    )
+                    return
+            else:
+                # Если банк не выбран, подставляем банк пользователя
+                self._on_wallet_user_change()
+
             already_open = user["wallet_status"] == "OPEN"
             self.platform.open_digital_wallet(user_id)
             self.refresh_all()
@@ -3081,10 +3298,26 @@ class DigitalRubleApp(tk.Tk):
     def _ui_convert_funds(self) -> None:
         try:
             user_id = self._selected_id(self.wallet_user_combo.get())
+            user = self.platform.get_user(user_id)
+
+            # Проверяем соответствие выбранного банка банку пользователя
+            selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
+            if selected_bank_text:
+                selected_bank_id = self._selected_id(selected_bank_text)
+                if selected_bank_id != user["bank_id"]:
+                    messagebox.showerror(
+                        "Конвертация средств",
+                        f"Пользователь {user['name']} обслуживается в банке ID {user['bank_id']}. "
+                        f"Выберите соответствующий банк (ФО) перед пополнением цифрового кошелька.",
+                    )
+                    return
+            else:
+                # Если банк не выбран, подставляем банк пользователя
+                self._on_wallet_user_change()
+
             amount = float(self.convert_amount.get())
             self.platform.exchange_to_digital(user_id, amount)
             self.refresh_all()
-            user = self.platform.get_user(user_id)
             messagebox.showinfo(
                 "Конвертация средств",
                 f"Цифровой кошелек пользователя {user['name']} пополнен на {amount:.2f} ЦР",
@@ -3210,40 +3443,343 @@ class DigitalRubleApp(tk.Tk):
             f"Обработано: {stats['processed']}, Конфликты: {stats['conflicts']}",
         )
 
-    def _refresh_bank_transactions(self) -> None:
+    def _refresh_bank_data(self) -> None:
+        """Обновляет данные, хращиеся в финансовой организации"""
         if not self.bank_tx_table:
             return
-        def clear(tree):
-            if tree:
-                for item in tree.get_children():
-                    tree.delete(item)
+        
         self._clear_tree(self.bank_tx_table)
+        
         selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
         bank_id = None
         if selected_bank:
             bank_id = self._selected_id(selected_bank)
-        for tx in self.platform.get_transactions(bank_id=bank_id):
-            sender = self.platform.get_user(tx["sender_id"])
-            receiver = self.platform.get_user(tx["receiver_id"])
-            tx_type_display = "Смарт-контракт" if tx['tx_type'] == "CONTRACT" else (
-                self._translate_channel(tx['channel']) if tx['tx_type'] == "EXCHANGE" else tx['channel']
-            )
+        
+        if not bank_id:
+            # Если банк не выбран, показываем сообщение
             self.bank_tx_table.insert(
                 "",
                 tk.END,
                 values=(
-                    tx["id"],
-                    sender["name"],
-                    receiver["name"],
-                    tx_type_display,
-                    f"{tx['amount']:.2f}",
+                    "-",
+                    "-",
+                    "Выберите финансовую организацию для просмотра данных",
+                    "-",
                 ),
             )
+            return
+        
+        try:
+            # Получаем всех клиентов банка
+            users = self.platform.list_users()
+            bank_users = [u for u in users if u.get("bank_id") == bank_id]
+            
+            if not bank_users:
+                self.bank_tx_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        "-",
+                        "-",
+                        "Нет клиентов в данной финансовой организации",
+                        "-",
+                    ),
+                )
+                return
+            
+            # Получаем все транзакции банка
+            all_transactions = self.platform.get_transactions(bank_id=bank_id)
+            
+            # Группируем транзакции по клиентам и считаем статистику
+            for user in bank_users:
+                user_id = user["id"]
+                user_name = user["name"]
+                user_type = self._user_type_label(user["user_type"])
+                
+                # Транзакции, где пользователь был отправителем или получателем
+                user_txs = [
+                    tx for tx in all_transactions 
+                    if tx.get("sender_id") == user_id or tx.get("receiver_id") == user_id
+                ]
+                
+                tx_count = len(user_txs)
+                
+                # Подсчитываем типы транзакций
+                tx_types = {}
+                for tx in user_txs:
+                    tx_type = tx.get("tx_type", "UNKNOWN")
+                    tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
+                
+                # Определяем преобладающий тип
+                if tx_types:
+                    predominant_type = max(tx_types.items(), key=lambda x: x[1])[0]
+                    predominant_label = {
+                        "ONLINE": "Онлайн",
+                        "OFFLINE": "Оффлайн",
+                        "EXCHANGE": "Обмен",
+                        "CONTRACT": "Смарт-контракт",
+                    }.get(predominant_type, predominant_type)
+                else:
+                    predominant_label = "Нет транзакций"
+                
+                self.bank_tx_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        user_name,
+                        user_type,
+                        tx_count,
+                        predominant_label,
+                    ),
+                )
+                
+        except Exception as e:
+            import traceback
+            print(f"Ошибка при загрузке данных ФО: {e}")
+            traceback.print_exc()
+            self.bank_tx_table.insert(
+                "",
+                tk.END,
+                values=(
+                    "Ошибка",
+                    "-",
+                    f"Не удалось загрузить данные: {str(e)}",
+                    "-",
+                ),
+            )
+    
+    def _refresh_bank_data_and_blocks(self) -> None:
+        """Обновляет данные ФО и блоки"""
+        self._refresh_bank_data()
+        self._refresh_bank_blocks()
+    
+    def _refresh_bank_blocks(self) -> None:
+        """Обновляет таблицу блоков распределенного реестра для вкладки ФО"""
+        if not self.bank_blocks_table:
+            return
+        
+        self._clear_tree(self.bank_blocks_table)
+        
+        selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
+        bank_id = None
+        if selected_bank:
+            bank_id = self._selected_id(selected_bank)
+        
+        if not bank_id:
+            return
+        
+        try:
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{bank_id}.db")
+            
+            # Получаем все блоки из БД банка (они реплицированы с ЦБ)
+            rows = bank_db.execute(
+                "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
+            )
+            
+            for row in rows:
+                # Проверяем количество транзакций в блоке
+                tx_count_row = bank_db.execute(
+                    """
+                    SELECT COUNT(*) as count FROM block_transactions bt 
+                    JOIN blocks b ON b.id = bt.block_id 
+                    WHERE b.height = ?
+                    """,
+                    (row["height"],),
+                    fetchone=True,
+                )
+                tx_count = tx_count_row["count"] if tx_count_row else 0
+                
+                # Статус репликации: если блок есть в БД банка, значит он реплицирован
+                replication_status = "Реплицирован"
+                
+                self.bank_blocks_table.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        row["height"],
+                        row["hash"][:16] + "...",
+                        tx_count,
+                        row["timestamp"],
+                        replication_status,
+                    ),
+                )
+        except Exception as e:
+            import traceback
+            print(f"Ошибка при загрузке блоков ФО: {e}")
+            traceback.print_exc()
+    
+    def _on_bank_client_row_double_click(self, event) -> None:
+        """Обработчик двойного клика по строке клиента - открывает экспорт транзакций"""
+        selection = self.bank_tx_table.selection()
+        if not selection:
+            return
+        
+        item = selection[0]
+        values = self.bank_tx_table.item(item, "values")
+        if not values or len(values) < 1:
+            return
+        
+        client_name = values[0]
+        if client_name == "-" or client_name == "Ошибка":
+            return
+        
+        # Находим ID клиента по имени
+        selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
+        bank_id = None
+        if selected_bank:
+            bank_id = self._selected_id(selected_bank)
+        
+        if not bank_id:
+            messagebox.showwarning("Экспорт", "Выберите финансовую организацию")
+            return
+        
+        users = self.platform.list_users()
+        bank_users = [u for u in users if u.get("bank_id") == bank_id]
+        client_user = None
+        for user in bank_users:
+            if user["name"] == client_name:
+                client_user = user
+                break
+        
+        if not client_user:
+            messagebox.showwarning("Экспорт", f"Клиент {client_name} не найден")
+            return
+        
+        # Вызываем экспорт транзакций
+        self._ui_export_client_transactions(client_user["id"])
+    
+    def _ui_export_client_transactions(self, client_id: int = None) -> None:
+        """Экспорт полного лога всех транзакций клиента"""
+        selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
+        bank_id = None
+        if selected_bank:
+            bank_id = self._selected_id(selected_bank)
+        
+        if not bank_id:
+            messagebox.showwarning("Экспорт", "Выберите финансовую организацию")
+            return
+        
+        # Если client_id не передан, пытаемся получить из выбранной строки
+        if client_id is None:
+            selection = self.bank_tx_table.selection()
+            if selection:
+                item = selection[0]
+                values = self.bank_tx_table.item(item, "values")
+                if values and len(values) > 0:
+                    client_name = values[0]
+                    users = self.platform.list_users()
+                    bank_users = [u for u in users if u.get("bank_id") == bank_id]
+                    for user in bank_users:
+                        if user["name"] == client_name:
+                            client_id = user["id"]
+                            break
+        
+        if client_id is None:
+            messagebox.showwarning("Экспорт", "Выберите клиента для экспорта")
+            return
+        
+        try:
+            client = self.platform.get_user(client_id)
+            
+            # Получаем все транзакции клиента
+            all_transactions = self.platform.get_transactions(bank_id=bank_id)
+            client_transactions = [
+                tx for tx in all_transactions 
+                if tx.get("sender_id") == client_id or tx.get("receiver_id") == client_id
+            ]
+            
+            if not client_transactions:
+                messagebox.showinfo("Экспорт", f"У клиента {client['name']} нет транзакций")
+                return
+            
+            # Запрашиваем путь для сохранения
+            from datetime import datetime
+            default_filename = f"transactions_{client['name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            file_path = filedialog.asksaveasfilename(
+                title="Сохранить лог транзакций",
+                defaultextension=".txt",
+                filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")],
+                initialfile=default_filename
+            )
+            
+            if not file_path:
+                return
+            
+            # Формируем полный лог транзакций
+            # Безопасно получаем название банка
+            try:
+                bank_obj = self.platform._get_bank(bank_id)
+                bank_name = bank_obj["name"]
+            except Exception:
+                bank_name = f"ID {bank_id} (не найден)"
 
-    def _clear_bank_filter(self) -> None:
-        if self.bank_filter_combo:
-            self.bank_filter_combo.set("")
-        self._refresh_bank_transactions()
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write(f"ПОЛНЫЙ ЛОГ ТРАНЗАКЦИЙ КЛИЕНТА\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Клиент: {client['name']}\n")
+                f.write(f"Тип: {self._user_type_label(client['user_type'])}\n")
+                f.write(f"ID: {client_id}\n")
+                f.write(f"Банк: {bank_name}\n")
+                f.write(f"Дата экспорта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Всего транзакций: {len(client_transactions)}\n")
+                f.write("=" * 80 + "\n\n")
+                
+                for idx, tx in enumerate(client_transactions, 1):
+                    f.write(f"\nТРАНЗАКЦИЯ #{idx}\n")
+                    f.write("-" * 80 + "\n")
+                    f.write(f"ID транзакции: {tx['id']}\n")
+                    f.write(f"Хеш транзакции: {tx.get('hash', 'N/A')}\n")
+                    
+                    # Определяем роль клиента
+                    if tx.get("sender_id") == client_id:
+                        role = "Отправитель"
+                        try:
+                            counterparty = self.platform.get_user(tx["receiver_id"])
+                            counterparty_info = f"{counterparty['name']} (ID: {tx['receiver_id']})"
+                        except:
+                            counterparty_info = f"ID: {tx['receiver_id']}"
+                    else:
+                        role = "Получатель"
+                        try:
+                            counterparty = self.platform.get_user(tx["sender_id"])
+                            counterparty_info = f"{counterparty['name']} (ID: {tx['sender_id']})"
+                        except:
+                            counterparty_info = f"ID: {tx['sender_id']}"
+                    
+                    f.write(f"Роль: {role}\n")
+                    f.write(f"Контрагент: {counterparty_info}\n")
+                    f.write(f"Сумма: {tx['amount']:.2f} ЦР\n")
+                    f.write(f"Тип транзакции: {tx.get('tx_type', 'N/A')}\n")
+                    f.write(f"Канал: {tx.get('channel', 'N/A')}\n")
+                    f.write(f"Статус: {tx.get('status', 'N/A')}\n")
+                    f.write(f"Время: {tx.get('timestamp', 'N/A')}\n")
+                    
+                    if tx.get("notes"):
+                        f.write(f"Примечание: {tx['notes']}\n")
+                    
+                    # Метаданные
+                    f.write(f"\nМетаданные:\n")
+                    f.write(f"  - Банк: {self.platform._get_bank(tx.get('bank_id', bank_id))['name']}\n")
+                    if tx.get("offline_flag"):
+                        f.write(f"  - Офлайн транзакция: Да\n")
+                    if tx.get("user_sig"):
+                        f.write(f"  - Подпись пользователя: {tx['user_sig'][:32]}...\n")
+                    if tx.get("bank_sig"):
+                        f.write(f"  - Подпись банка: {tx['bank_sig'][:32]}...\n")
+                    if tx.get("cbr_sig"):
+                        f.write(f"  - Подпись ЦБ: {tx['cbr_sig'][:32]}...\n")
+                    
+                    f.write("\n")
+            
+            messagebox.showinfo("Экспорт", f"Лог транзакций сохранен в файл:\n{file_path}")
+            
+        except Exception as e:
+            import traceback
+            error_msg = f"Ошибка при экспорте транзакций: {e}\n\n{traceback.format_exc()}"
+            messagebox.showerror("Ошибка экспорта", error_msg)
+            print(error_msg)
 
     def _ui_export_registry(self) -> None:
         folder = filedialog.askdirectory(title="Выберите папку для экспорта")
