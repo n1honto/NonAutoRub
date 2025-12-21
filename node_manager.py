@@ -1,9 +1,3 @@
-"""
-Модуль управления узлами распределенного реестра.
-
-Обеспечивает регистрацию узлов, их адреса, статусы и управление сетью.
-"""
-
 from __future__ import annotations
 
 import json
@@ -18,7 +12,6 @@ from database import DatabaseManager
 
 
 class NodeStatus(Enum):
-    """Статус узла в сети"""
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
     SYNCING = "SYNCING"
@@ -27,23 +20,20 @@ class NodeStatus(Enum):
 
 @dataclass
 class NodeInfo:
-    """Информация об узле сети"""
     node_id: str
     name: str
-    node_type: str  # "CBR", "BANK" - типы узлов в системе
-    address: str  # Локальный адрес (путь к БД или идентификатор)
-    db_path: str  # Путь к БД узла
+    node_type: str
+    address: str
+    db_path: str
     status: NodeStatus = NodeStatus.ACTIVE
     last_seen: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    height: int = 0  # Текущая высота блокчейна узла
+    height: int = 0
     last_block_hash: str = ""
     registered_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    public_key: Optional[str] = None  # Публичный ключ для верификации подписей
+    public_key: Optional[str] = None
 
 
 class NodeManager:
-    """Управление узлами распределенного реестра"""
-    
     def __init__(self, db: DatabaseManager, current_node_id: str = "CBR_0"):
         self.db = db
         self.current_node_id = current_node_id
@@ -52,7 +42,6 @@ class NodeManager:
         self._load_nodes_from_db()
     
     def _init_node_tables(self) -> None:
-        """Инициализация таблиц для хранения информации об узлах"""
         self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS network_nodes (
@@ -97,13 +86,11 @@ class NodeManager:
         )
     
     def _load_nodes_from_db(self) -> None:
-        """Загрузка узлов из БД в память"""
         rows = self.db.execute(
             "SELECT * FROM network_nodes",
             fetchall=True
         )
         for row in rows or []:
-            # Преобразуем sqlite3.Row в dict для удобства работы
             row_dict = dict(row)
             node = NodeInfo(
                 node_id=row_dict["node_id"],
@@ -129,7 +116,6 @@ class NodeManager:
         address: str = "",
         public_key: Optional[str] = None
     ) -> NodeInfo:
-        """Регистрация нового узла в сети"""
         if not address:
             address = f"local://{db_path}"
         
@@ -177,7 +163,6 @@ class NodeManager:
         height: Optional[int] = None,
         last_block_hash: Optional[str] = None
     ) -> None:
-        """Обновление статуса узла"""
         if node_id not in self._known_nodes:
             return
         
@@ -200,26 +185,21 @@ class NodeManager:
         )
     
     def get_node(self, node_id: str) -> Optional[NodeInfo]:
-        """Получение информации об узле"""
         return self._known_nodes.get(node_id)
     
     def get_all_nodes(self, status: Optional[NodeStatus] = None) -> List[NodeInfo]:
-        """Получение списка всех узлов"""
         nodes = list(self._known_nodes.values())
         if status:
             nodes = [n for n in nodes if n.status == status]
         return nodes
     
     def get_active_nodes(self) -> List[NodeInfo]:
-        """Получение списка активных узлов"""
         return self.get_all_nodes(NodeStatus.ACTIVE)
     
     def get_nodes_by_type(self, node_type: str) -> List[NodeInfo]:
-        """Получение узлов определенного типа"""
         return [n for n in self._known_nodes.values() if n.node_type == node_type]
     
     def register_connection(self, from_node_id: str, to_node_id: str) -> None:
-        """Регистрация соединения между узлами"""
         now = datetime.utcnow().isoformat()
         self.db.execute(
             """
@@ -231,7 +211,6 @@ class NodeManager:
         )
     
     def update_connection(self, from_node_id: str, to_node_id: str) -> None:
-        """Обновление времени последней коммуникации"""
         self.db.execute(
             """
             UPDATE node_connections
@@ -242,7 +221,6 @@ class NodeManager:
         )
     
     def get_connected_nodes(self, node_id: str) -> List[NodeInfo]:
-        """Получение списка узлов, соединенных с данным узлом"""
         rows = self.db.execute(
             """
             SELECT to_node_id FROM node_connections
@@ -255,15 +233,9 @@ class NodeManager:
         return [self._known_nodes[nid] for nid in connected_ids if nid in self._known_nodes]
     
     def discover_nodes(self) -> List[NodeInfo]:
-        """
-        Обнаружение новых узлов в сети.
-        В реальной системе это может быть через broadcast или registry.
-        """
-        # В симуляции просто возвращаем все известные узлы
         return self.get_active_nodes()
     
     def sync_node_info(self, node_id: str, height: int, last_block_hash: str) -> None:
-        """Синхронизация информации об узле после обновления блокчейна"""
         self.update_node_status(
             node_id,
             NodeStatus.ACTIVE,
@@ -272,7 +244,6 @@ class NodeManager:
         )
     
     def get_node_statistics(self) -> Dict:
-        """Получение статистики по узлам"""
         all_nodes = self.get_all_nodes()
         stats = {
             "total_nodes": len(all_nodes),

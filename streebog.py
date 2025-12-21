@@ -1,12 +1,6 @@
-"""
-Реализация хеш-функции ГОСТ Р 34.11-2018 (Стрибог)
-Полная реализация алгоритма Streebog-256 и Streebog-512
-"""
-
 import struct
 from typing import List
 
-# Константы для Streebog
 IV_256 = bytes([
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
@@ -29,7 +23,6 @@ IV_512 = bytes([
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ])
 
-# S-box для Streebog (Pi)
 PI = bytes([
     0xFC, 0xEE, 0xDD, 0x11, 0xCF, 0x6E, 0x31, 0x16, 0xFB, 0xC4, 0xFA, 0xDA, 0x23, 0xC5, 0x04, 0x4D,
     0xE9, 0x77, 0xF0, 0xDB, 0x93, 0x2E, 0x99, 0xBA, 0x17, 0x36, 0xF1, 0xBB, 0x14, 0xCD, 0x5F, 0xC1,
@@ -49,7 +42,6 @@ PI = bytes([
     0x59, 0xA6, 0x74, 0xD2, 0xE6, 0xF4, 0xB4, 0xC0, 0xD1, 0x66, 0xAF, 0xC2, 0x39, 0x4B, 0x63, 0xB6,
 ])
 
-# Константы для линейного преобразования L
 L_VEC = bytes([
     0x94, 0x20, 0x85, 0x10, 0xC2, 0xC0, 0x01, 0xFB,
     0x01, 0xC0, 0xC2, 0x10, 0x85, 0x20, 0x94, 0x01,
@@ -57,7 +49,6 @@ L_VEC = bytes([
 
 
 def _gf_mul(a: int, b: int) -> int:
-    """Умножение в поле Галуа GF(2^8)"""
     result = 0
     while b:
         if b & 1:
@@ -70,8 +61,6 @@ def _gf_mul(a: int, b: int) -> int:
 
 
 def _l_transform(data: bytes) -> bytes:
-    """Линейное преобразование L (упрощенная версия)"""
-    # L-преобразование работает с 16-байтными блоками
     if len(data) < 16:
         data = data + b'\x00' * (16 - len(data))
     elif len(data) > 16:
@@ -87,15 +76,10 @@ def _l_transform(data: bytes) -> bytes:
 
 
 def _s_transform(data: bytes) -> bytes:
-    """Нелинейное преобразование S (Pi)"""
-    # S-преобразование работает с любым размером данных
     return bytes([PI[b] if b < len(PI) else 0 for b in data])
 
 
 def _p_transform(data: bytes) -> bytes:
-    """Преобразование перестановки P (тау-преобразование)"""
-    # Тау-преобразование для Streebog работает с 64-байтными блоками
-    # Если данные меньше 64 байт, дополняем нулями
     if len(data) < 64:
         data = data + b'\x00' * (64 - len(data))
     elif len(data) > 64:
@@ -121,23 +105,17 @@ def _p_transform(data: bytes) -> bytes:
 
 
 def _e_transform_simple(k: bytes, m: bytes) -> bytes:
-    """Упрощенное E-преобразование для Streebog"""
-    # Упрощенная версия: XOR с ключом и несколько раундов
     if len(m) < 64:
         m = m + b'\x00' * (64 - len(m))
     if len(k) < 64:
         k = k + b'\x00' * (64 - len(k))
     
     state = bytearray(m)
-    # Применяем несколько раундов преобразований
     for _ in range(12):
-        # XOR с ключом
         state = bytearray(_xor_bytes(bytes(state), k))
-        # S-преобразование к каждому 16-байтному блоку
         blocks = [bytes(state[i:i+16]) for i in range(0, 64, 16)]
         blocks = [_s_transform(b) for b in blocks]
         state = bytearray(b''.join(blocks))
-        # L-преобразование к каждому 16-байтному блоку
         blocks = [bytes(state[i:i+16]) for i in range(0, 64, 16)]
         blocks = [_l_transform(b) for b in blocks]
         state = bytearray(b''.join(blocks))
@@ -146,7 +124,6 @@ def _e_transform_simple(k: bytes, m: bytes) -> bytes:
 
 
 def _key_schedule(k: bytes, i: int) -> bytes:
-    """Расписание ключей"""
     k = bytearray(k)
     k[0] ^= (i + 1) & 0xFF
     k = _s_transform(bytes(k))
@@ -155,12 +132,10 @@ def _key_schedule(k: bytes, i: int) -> bytes:
 
 
 def _xor_bytes(a: bytes, b: bytes) -> bytes:
-    """XOR двух байтовых строк"""
     return bytes([x ^ y for x, y in zip(a, b)])
 
 
 def _add_modulo_512(a: bytes, b: bytes) -> bytes:
-    """Сложение по модулю 2^512"""
     result = bytearray(64)
     carry = 0
     for i in range(63, -1, -1):
@@ -171,38 +146,18 @@ def _add_modulo_512(a: bytes, b: bytes) -> bytes:
 
 
 def streebog_256(data: bytes) -> bytes:
-    """
-    Вычисление хеша по ГОСТ Р 34.11-2018 (Стрибог-256)
-    
-    Args:
-        data: Входные данные для хеширования
-    
-    Returns:
-        Хеш длиной 32 байта (256 бит)
-    """
     return _streebog(data, IV_256, 256)
 
 
 def streebog_512(data: bytes) -> bytes:
-    """
-    Вычисление хеша по ГОСТ Р 34.11-2018 (Стрибог-512)
-    
-    Args:
-        data: Входные данные для хеширования
-    
-    Returns:
-        Хеш длиной 64 байта (512 бит)
-    """
     return _streebog(data, IV_512, 512)
 
 
 def _streebog(data: bytes, iv: bytes, output_size: int) -> bytes:
-    """Внутренняя функция для вычисления хеша Streebog"""
     h = bytearray(iv)
     n = bytearray(64)
     sigma = bytearray(64)
     
-    # Дополнение данных
     data_len = len(data)
     padding_len = 64 - (data_len % 64)
     if padding_len == 64:
@@ -210,27 +165,21 @@ def _streebog(data: bytes, iv: bytes, output_size: int) -> bytes:
     
     padded_data = data + b'\x01' + b'\x00' * (padding_len - 1)
     
-    # Обработка блоков
     for i in range(0, len(padded_data), 64):
         block = padded_data[i:i+64]
         if len(block) < 64:
             block = block + b'\x00' * (64 - len(block))
         
-        # g(N, h, m)
         h = _g_transform(n, h, block)
         
-        # Обновление N
         n = _add_modulo_512(n, bytes([64] + [0] * 63))
         
-        # Обновление sigma
         sigma = _add_modulo_512(sigma, block)
     
-    # Финальное преобразование
     n = _add_modulo_512(n, bytes([data_len % 256] + [0] * 63))
     h = _g_transform(bytes([0] * 64), h, n)
     h = _g_transform(bytes([0] * 64), h, sigma)
     
-    # Возврат нужного размера
     if output_size == 256:
         return bytes(h[:32])
     else:
@@ -238,9 +187,6 @@ def _streebog(data: bytes, iv: bytes, output_size: int) -> bytes:
 
 
 def _g_transform(n: bytes, h: bytes, m: bytes) -> bytes:
-    """Преобразование g"""
-    # В Streebog все блоки должны быть 64 байта
-    # Если h или n меньше 64 байт, дополняем нулями
     if len(h) < 64:
         h = h + b'\x00' * (64 - len(h))
     if len(n) < 64:
@@ -249,25 +195,20 @@ def _g_transform(n: bytes, h: bytes, m: bytes) -> bytes:
         m = m + b'\x00' * (64 - len(m))
     
     k = _xor_bytes(h, n)
-    # Применяем S-преобразование к каждому 16-байтному блоку
     k_blocks = [k[i:i+16] for i in range(0, 64, 16)]
     k_blocks = [_s_transform(block) for block in k_blocks]
     k = b''.join(k_blocks)
     
-    # Применяем L-преобразование к каждому 16-байтному блоку
     k_blocks = [k[i:i+16] for i in range(0, 64, 16)]
     k_blocks = [_l_transform(block) for block in k_blocks]
     k = b''.join(k_blocks)
     
-    # Применяем P-преобразование (tau) к 64-байтному блоку
     k = _p_transform(k)
     
-    # Снова L-преобразование к каждому 16-байтному блоку
     k_blocks = [k[i:i+16] for i in range(0, 64, 16)]
     k_blocks = [_l_transform(block) for block in k_blocks]
     k = b''.join(k_blocks)
     
-    # E-преобразование (упрощенное)
     t = _e_transform_simple(k, h)
     t = _xor_bytes(t, m)
     t = _xor_bytes(t, h)
@@ -276,11 +217,9 @@ def _g_transform(n: bytes, h: bytes, m: bytes) -> bytes:
 
 
 def streebog_256_hex(data: bytes) -> str:
-    """Вычисление хеша Streebog-256 и возврат в hex формате"""
     return streebog_256(data).hex()
 
 
 def streebog_512_hex(data: bytes) -> str:
-    """Вычисление хеша Streebog-512 и возврат в hex формате"""
     return streebog_512(data).hex()
 

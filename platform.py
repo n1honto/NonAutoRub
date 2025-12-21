@@ -29,7 +29,6 @@ try:
 except ImportError:
     BATCH_PROCESSING_AVAILABLE = False
 
-# Константа для количества банков по умолчанию
 DEFAULT_BANK_COUNT = 4
 
 logging.basicConfig(
@@ -47,32 +46,26 @@ CRYPTO_SECRET = "druble-sim-secret"
 
 
 class CryptoKeyPair:
-    """Класс для работы с ключевой парой по ГОСТ 34.10-2018"""
     _key_storage = None
     
     def __init__(self, owner_type: str, owner_id: int) -> None:
         seed = f"{CRYPTO_SECRET}:{owner_type}:{owner_id}"
-        # Пытаемся загрузить ключ из безопасного хранилища
         if self._key_storage:
             self.private_key_int = self._key_storage.load_key(owner_type, owner_id)
             if self.private_key_int is None:
-                # Генерируем новый ключ и сохраняем его
                 self.private_key_int = generate_private_key(seed)
                 self._key_storage.store_key(owner_type, owner_id, self.private_key_int)
         else:
-            # Fallback: генерируем ключ без безопасного хранения
             self.private_key_int = generate_private_key(seed)
         self.public_key_point = get_public_key(self.private_key_int)
         self.owner_type = owner_type
         self.owner_id = owner_id
 
     def sign(self, message_hash: str) -> str:
-        """Подписание хеша сообщения по ГОСТ 34.10-2018"""
         signature = gost_sign(message_hash, self.private_key_int)
         return signature_to_string(signature)
 
     def verify(self, message_hash: str, signature: str) -> bool:
-        """Проверка подписи по ГОСТ 34.10-2018"""
         sig_dict = signature_from_string(signature)
         return gost_verify(message_hash, sig_dict, self.public_key_point)
 
@@ -82,7 +75,6 @@ def _get_keypair(owner_type: str, owner_id: int) -> CryptoKeyPair:
 
 
 def _hash_str(value: str) -> str:
-    """Вычисление хеша по ГОСТ Р 34.11-2018 (Стрибог-256)"""
     from streebog import streebog_256_hex
     return streebog_256_hex(value.encode("utf-8"))
 
@@ -92,13 +84,11 @@ def _private_key(owner_type: str, owner_id: int) -> str:
 
 
 def _sign(owner_type: str, owner_id: int, message_hash: str) -> str:
-    """Подписание хеша сообщения по ГОСТ 34.10-2018"""
     keypair = _get_keypair(owner_type, owner_id)
     return keypair.sign(message_hash)
 
 
 def _verify(owner_type: str, owner_id: int, message_hash: str, signature: str) -> bool:
-    """Проверка подписи по ГОСТ 34.10-2018"""
     keypair = _get_keypair(owner_type, owner_id)
     return keypair.verify(message_hash, signature)
 
@@ -167,8 +157,6 @@ class DigitalRublePlatform:
         self._offline_tx_counter: int = 0
         self._offline_sync_counter: int = 0
         
-        # Инициализация распределенной сети (до инициализации банков)
-        # Инициализируем _distributed_enabled заранее
         self._distributed_enabled = False
         self.node_manager = None
         self.p2p_network = None
@@ -183,7 +171,6 @@ class DigitalRublePlatform:
             self.p2p_network = P2PNetwork(self.node_manager, self.ledger, self.db, self.node_id)
             self.fork_resolver = ForkResolver(self.ledger, self.db)
             
-            # Регистрируем текущий узел
             self.node_manager.register_node(
                 node_id=self.node_id,
                 name="ЦБ РФ (Главный узел)",
@@ -194,7 +181,6 @@ class DigitalRublePlatform:
             
             self._distributed_enabled = True
         except (ImportError, Exception):
-            # В случае любой ошибки оставляем _distributed_enabled = False
             self._distributed_enabled = False
             if not hasattr(self, 'node_manager'):
                 self.node_manager = None
@@ -203,10 +189,8 @@ class DigitalRublePlatform:
             if not hasattr(self, 'fork_resolver'):
                 self.fork_resolver = None
         
-        # Инициализация банков по умолчанию (после инициализации распределенной сети)
         self._initialize_default_banks()
         
-        # Инициализация батч-обработки и детального логирования
         if BATCH_PROCESSING_AVAILABLE:
             self.tx_logger = TransactionLogger(self._log_activity)
             self.tx_batch_processor = TransactionBatchProcessor(
@@ -231,7 +215,6 @@ class DigitalRublePlatform:
             self.contract_batch_processor = None
 
     def _cleanup_transient(self) -> None:
-        """Удаляет временные ошибки при запуске, чтобы не показывать старые записи."""
         try:
             self.db.execute("DELETE FROM failed_transactions")
             self.db.execute("DELETE FROM system_errors")
@@ -239,7 +222,6 @@ class DigitalRublePlatform:
             pass
 
     def _ensure_seed_state(self) -> None:
-        """Проверяет наличие файлов-маркеров для удаления БД банков при старте"""
         from pathlib import Path
         marker_file = Path("._delete_bank_dbs_on_startup")
         if marker_file.exists():
@@ -257,24 +239,17 @@ class DigitalRublePlatform:
                 pass
 
     def _initialize_default_banks(self) -> None:
-        """
-        Инициализирует банки по умолчанию, если их еще нет.
-        Банки создаются только один раз при первом запуске.
-        """
         existing_banks = self.list_banks()
         
-        # Если банки уже существуют, ничего не делаем
         if len(existing_banks) >= DEFAULT_BANK_COUNT:
             return
         
-        # Создаем недостающие банки до DEFAULT_BANK_COUNT штук
         banks_to_create = DEFAULT_BANK_COUNT - len(existing_banks)
         
         for idx in range(banks_to_create):
             bank_number = len(existing_banks) + idx + 1
             name = f"Финансовая организация {bank_number}"
             
-            # Проверяем, не существует ли уже банк с таким именем
             existing = self.db.execute(
                 "SELECT id FROM banks WHERE name = ?",
                 (name,),
@@ -282,15 +257,13 @@ class DigitalRublePlatform:
             )
             
             if existing:
-                continue  # Банк уже существует, пропускаем
+                continue
             
-            # Создаем банк в центральной БД
             self.db.execute(
                 "INSERT INTO banks(name) VALUES(?)",
                 (name,),
             )
             
-            # Получаем ID созданного банка
             row = self.db.execute(
                 "SELECT id FROM banks WHERE name = ?",
                 (name,),
@@ -298,16 +271,14 @@ class DigitalRublePlatform:
             )
             
             if not row:
-                continue  # Не удалось создать банк
+                continue
             
             bank_id = row["id"]
             
-            # Создаем БД для банка
             from database import DatabaseManager
             db_path = f"bank_{bank_id}.db"
             DatabaseManager(db_path)
             
-            # Регистрируем узел в распределенной сети
             if self._distributed_enabled and self.node_manager:
                 node_id = f"BANK_{bank_id}"
                 self.node_manager.register_node(
@@ -317,11 +288,9 @@ class DigitalRublePlatform:
                     db_path=db_path,
                     address=f"local://{db_path}"
                 )
-                # Регистрируем соединение с текущим узлом
                 self.node_manager.register_connection(self.node_id, node_id)
                 self.node_manager.register_connection(node_id, self.node_id)
             
-            # Логируем создание банка
             self._log_activity(
                 actor=name,
                 stage="Инициализация ФО",
@@ -347,11 +316,7 @@ class DigitalRublePlatform:
             self.db.execute("DELETE FROM government_institutions")
             
             self.db.execute("DELETE FROM transactions")
-            # Не удаляем users из ЦБ, т.к. их там больше нет
-            # Пользователи удаляются вместе с БД банков
             self.db.execute("DELETE FROM wallets")
-            # НЕ удаляем банки - они являются фиксированной инфраструктурой
-            # self.db.execute("DELETE FROM banks")  # ЗАКОММЕНТИРОВАНО
             
             self.db.execute("DELETE FROM blocks WHERE height > 0")
             
@@ -365,8 +330,6 @@ class DigitalRublePlatform:
         finally:
             self.db.execute("PRAGMA foreign_keys = ON")
         
-        # НЕ удаляем файлы БД банков - они являются фиксированной инфраструктурой
-        # Вместо этого очищаем данные пользователей в БД банков
         from pathlib import Path
         banks = self.list_banks()
         for bank in banks:
@@ -376,7 +339,6 @@ class DigitalRublePlatform:
                 try:
                     from database import DatabaseManager
                     bank_db = DatabaseManager(bank_db_path)
-                    # Очищаем данные пользователей, но сохраняем структуру БД
                     bank_db.execute("PRAGMA foreign_keys = OFF")
                     try:
                         bank_db.execute("DELETE FROM government_institutions")
@@ -385,7 +347,6 @@ class DigitalRublePlatform:
                         bank_db.execute("DELETE FROM blocks WHERE height > 0")
                         bank_db.execute("DELETE FROM block_transactions")
                         bank_db.execute("DELETE FROM utxos")
-                        # Сбрасываем счетчики
                         try:
                             bank_db.execute(
                                 "DELETE FROM sqlite_sequence WHERE name IN ('users', 'government_institutions')"
@@ -406,11 +367,9 @@ class DigitalRublePlatform:
         existing_banks = self.list_banks()
         max_banks = DEFAULT_BANK_COUNT
         
-        # Если уже есть максимальное количество банков, возвращаем существующие
         if len(existing_banks) >= max_banks:
             return [bank["id"] for bank in existing_banks[:max_banks]]
         
-        # Ограничиваем количество создаваемых банков
         available_slots = max_banks - len(existing_banks)
         count = min(count, available_slots)
         
@@ -440,7 +399,6 @@ class DigitalRublePlatform:
             db_path = f"bank_{bank_id}.db"
             DatabaseManager(db_path)
             
-            # Регистрируем узел в распределенной сети
             if self._distributed_enabled and self.node_manager:
                 node_id = f"BANK_{bank_id}"
                 self.node_manager.register_node(
@@ -450,7 +408,6 @@ class DigitalRublePlatform:
                     db_path=db_path,
                     address=f"local://{db_path}"
                 )
-                # Регистрируем соединение с текущим узлом
                 self.node_manager.register_connection(self.node_id, node_id)
                 self.node_manager.register_connection(node_id, self.node_id)
             
@@ -463,19 +420,12 @@ class DigitalRublePlatform:
         return bank_ids
     
     def sync_with_network(self) -> Dict[str, int]:
-        """
-        Синхронизация с сетью: запрос обновлений от всех активных узлов.
-        
-        Returns:
-            Dict с результатами синхронизации
-        """
         if not self._distributed_enabled or not self.p2p_network:
             return {"nodes_checked": 0, "blocks_added": 0, "blocks_failed": 0}
         
         return self.p2p_network.sync_with_network()
 
     def create_users(self, count: int, user_type: str) -> List[int]:
-        """Создает пользователей в БД банков и кошельки в ЦБ"""
         users: List[int] = []
         banks = self.list_banks()
         if not banks:
@@ -484,7 +434,6 @@ class DigitalRublePlatform:
         from database import DatabaseManager
         from pathlib import Path
         
-        # Вычисляем максимальный ID пользователя из всех БД банков для последовательной нумерации
         max_user_id = 0
         for bank in banks:
             bank_id = bank["id"]
@@ -508,7 +457,6 @@ class DigitalRublePlatform:
             }[user_type]
             name = f"{label} #{uuid.uuid4().hex[:4]}"
             
-            # Создаем кошелек в ЦБ (обезличенный)
             wallet_address = f"WALLET_{bank_id}_{uuid.uuid4().hex[:8]}"
             wallet_row = self.db.execute(
                 """
@@ -526,22 +474,17 @@ class DigitalRublePlatform:
                 raise RuntimeError(f"Не удалось создать кошелек {wallet_address} в ЦБ")
             wallet_id = wallet_id_row["id"]
             
-            # Вычисляем следующий последовательный ID
             next_user_id = max_user_id + i + 1
             
-            # Создаем пользователя в БД банка (с персональными данными)
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
-            # Отключаем foreign keys, т.к. bank_id ссылается на таблицу banks в ЦБ, а не в БД банка
             bank_db.execute("PRAGMA foreign_keys = OFF")
             try:
-                # Проверяем, не существует ли уже пользователь с таким ID в этой БД
                 existing = bank_db.execute(
                     "SELECT id FROM users WHERE id = ?",
                     (next_user_id,),
                     fetchone=True,
                 )
                 if existing:
-                    # Если ID уже существует, используем AUTOINCREMENT
                     bank_db.execute(
                         """
                         INSERT INTO users(name, user_type, bank_id, wallet_id, fiat_balance, 
@@ -557,7 +500,6 @@ class DigitalRublePlatform:
                     )
                     next_user_id = user_row["id"]
                 else:
-                    # Вставляем пользователя с явно указанным ID для последовательной нумерации
                     bank_db.execute(
                         """
                         INSERT INTO users(id, name, user_type, bank_id, wallet_id, fiat_balance, 
@@ -569,7 +511,6 @@ class DigitalRublePlatform:
             finally:
                 bank_db.execute("PRAGMA foreign_keys = ON")
             users.append(next_user_id)
-            # Обновляем максимальный ID для следующей итерации
             max_user_id = max(max_user_id, next_user_id)
             
             self._log_activity(
@@ -581,14 +522,12 @@ class DigitalRublePlatform:
         return users
 
     def create_government_institutions(self, count: int) -> List[int]:
-        """Создает государственные учреждения в БД банков"""
         from database import DatabaseManager
         ids = self.create_users(count, "GOVERNMENT")
         for user_id in ids:
             user = self.get_user(user_id)
             bank_id = user["bank_id"]
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
-            # Отключаем foreign keys для вставки
             bank_db.execute("PRAGMA foreign_keys = OFF")
             try:
                 bank_db.execute(
@@ -610,7 +549,6 @@ class DigitalRublePlatform:
         return [dict(row) for row in rows] if rows else []
 
     def list_users(self, user_type: str | None = None) -> List[Dict]:
-        """Получает список пользователей из всех БД банков"""
         from database import DatabaseManager
         all_users = []
         banks = self.list_banks()
@@ -635,7 +573,6 @@ class DigitalRublePlatform:
         return all_users
 
     def get_user(self, user_id: int) -> Dict:
-        """Получает пользователя из БД соответствующего банка"""
         from database import DatabaseManager
         banks = self.list_banks()
         
@@ -645,16 +582,13 @@ class DigitalRublePlatform:
             if row:
                 user_dict = dict(row)
                 user_dict["bank_name"] = bank["name"]
-                # Проверяем, что wallet_id не NULL
                 if user_dict.get("wallet_id") is None:
-                    # Пытаемся найти кошелек по bank_id и создать связь
                     wallet_row = self.db.execute(
                         "SELECT id FROM wallets WHERE bank_id = ? ORDER BY id DESC LIMIT 1",
                         (bank["id"],),
                         fetchone=True,
                     )
                     if wallet_row:
-                        # Обновляем wallet_id в БД банка
                         bank_db.execute(
                             "UPDATE users SET wallet_id = ? WHERE id = ?",
                             (wallet_row["id"], user_id),
@@ -678,8 +612,6 @@ class DigitalRublePlatform:
         result: List[Dict] = []
         for row in rows or []:
             tx = dict(row)
-            # Валидация подписей не выполняется для уже созданных транзакций
-            # Транзакции уже прошли валидацию при создании
             result.append(tx)
         return result
 
@@ -692,8 +624,6 @@ class DigitalRublePlatform:
         if not row:
             raise ValueError("Транзакция не найдена")
         tx = dict(row)
-        # Валидация подписей не выполняется для уже созданных транзакций
-        # Транзакции уже прошли валидацию при создании
         return tx
 
     def get_offline_transactions(self) -> List[Dict]:
@@ -784,33 +714,19 @@ class DigitalRublePlatform:
         return [dict(row) for row in rows] if rows else []
 
     def _get_transaction_hash_for_signing(self, tx_id: str, sender_id: int, receiver_id: int, amount: float, timestamp: str) -> str:
-        """Вычисляет хеш транзакции для подписания ЭЦП"""
-        # Нормализуем amount для консистентности (убираем лишние нули)
         amount_str = f"{amount:.10f}".rstrip('0').rstrip('.')
         core_str = f"{tx_id}:{sender_id}:{receiver_id}:{amount_str}:{timestamp}"
         return _hash_str(core_str)
     
     def _validate_transaction_signatures(self, tx: Dict) -> bool:
-        """
-        Валидация подписей транзакции при создании
-        
-        Args:
-            tx: Словарь с данными транзакции
-        
-        Returns:
-            True если подписи валидны, False в противном случае
-        """
         try:
-            # Для старых транзакций с пустыми подписями возвращаем True
             if not tx.get("user_sig") and not tx.get("bank_sig"):
                 return True
             
-            # Нормализуем amount (может быть float или строкой из БД)
             amount = tx["amount"]
             if isinstance(amount, str):
                 amount = float(amount)
             
-            # Вычисляем хеш для проверки подписей
             tx_hash_for_sig = self._get_transaction_hash_for_signing(
                 tx["id"],
                 tx["sender_id"],
@@ -819,28 +735,21 @@ class DigitalRublePlatform:
                 tx["timestamp"]
             )
             
-            # Проверка подписи пользователя
             if tx.get("user_sig"):
                 if not gost_verify("USER", tx["sender_id"], tx_hash_for_sig, tx["user_sig"]):
-                    # Не логируем ошибку, чтобы не засорять журнал
                     return False
             
-            # Проверка подписи банка
             if tx.get("bank_sig"):
                 if not gost_verify("BANK", tx["bank_id"], tx_hash_for_sig, tx["bank_sig"]):
-                    # Не логируем ошибку, чтобы не засорять журнал
                     return False
             
             return True
         except Exception as e:
-            # Для старых транзакций с пустыми подписями возвращаем True
             if not tx.get("user_sig") and not tx.get("bank_sig"):
                 return True
-            # Не логируем ошибку валидации, чтобы не засорять журнал
             return False
 
     def open_digital_wallet(self, user_id: int) -> None:
-        """Открывает цифровой кошелек пользователя"""
         from database import DatabaseManager
         user = self.get_user(user_id)
         if user["wallet_status"] == "OPEN":
@@ -849,14 +758,12 @@ class DigitalRublePlatform:
         bank_id = user["bank_id"]
         wallet_id = user.get("wallet_id")
         
-        # Обновляем статус в БД банка
         bank_db = DatabaseManager(f"bank_{bank_id}.db")
         bank_db.execute(
             "UPDATE users SET wallet_status = 'OPEN' WHERE id = ?",
             (user_id,),
         )
         
-        # Обновляем статус кошелька в ЦБ
         if wallet_id:
             self.db.execute(
                 "UPDATE wallets SET wallet_status = 'OPEN' WHERE id = ?",
@@ -871,7 +778,6 @@ class DigitalRublePlatform:
         )
 
     def exchange_to_digital(self, user_id: int, amount: float) -> None:
-        """Обмен фиатных денег на цифровые рубли"""
         from database import DatabaseManager
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной")
@@ -887,13 +793,11 @@ class DigitalRublePlatform:
             wallet_id = user.get("wallet_id")
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
             
-            # Обновляем балансы в БД банка
             bank_db.execute(
                 "UPDATE users SET fiat_balance = fiat_balance - ?, digital_balance = digital_balance + ? WHERE id = ?",
                 (amount, amount, user_id),
             )
             
-            # Обновляем баланс кошелька в ЦБ
             if not wallet_id:
                 raise ValueError(
                     f"У пользователя {user['name']} (ID {user_id}) нет кошелька. "
@@ -916,7 +820,6 @@ class DigitalRublePlatform:
             tx = self._create_transaction_record(context, status="CONFIRMED")
             self._create_utxo(user_id, amount, tx["id"])
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
-            # Создаем подпись блока ЦБ РФ
             block_signature = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE blocks SET block_signature = ? WHERE height = ?",
@@ -941,7 +844,6 @@ class DigitalRublePlatform:
             raise
 
     def open_offline_wallet(self, user_id: int) -> None:
-        """Открывает офлайн кошелек пользователя"""
         from database import DatabaseManager
         user = self.get_user(user_id)
         if user["offline_status"] == "OPEN":
@@ -952,7 +854,6 @@ class DigitalRublePlatform:
         activation = datetime.utcnow()
         expiration = activation + timedelta(days=14)
         
-        # Обновляем статус в БД банка
         bank_db = DatabaseManager(f"bank_{bank_id}.db")
         bank_db.execute(
             """
@@ -969,7 +870,6 @@ class DigitalRublePlatform:
             ),
         )
         
-        # Обновляем статус кошелька в ЦБ
         if wallet_id:
             self.db.execute(
                 """
@@ -1034,7 +934,6 @@ class DigitalRublePlatform:
             self._spend_utxos(user_id, amount, tx["id"])
             self._create_utxo(user_id, amount, tx["id"])
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
-            # Создаем подпись блока ЦБ РФ
             block_signature = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE blocks SET block_signature = ? WHERE height = ?",
@@ -1055,7 +954,6 @@ class DigitalRublePlatform:
                 context="Пользователь",
             )
 
-            # Обновляем offline_balance пользователя и кошелька
             try:
                 from database import DatabaseManager
                 bank_db = DatabaseManager(f"bank_{user['bank_id']}.db")
@@ -1070,7 +968,6 @@ class DigitalRublePlatform:
                         (amount, wallet_id),
                     )
             except Exception:
-                # Не падаем, если обновление offline_balance не удалось
                 pass
         except Exception as e:
             self._log_failed_transaction(None, "OFFLINE_FUND_ERROR", str(e))
@@ -1140,8 +1037,6 @@ class DigitalRublePlatform:
             raise ValueError("У отправителя не активирован оффлайн-кошелек")
         if receiver["offline_status"] != "OPEN":
             raise ValueError("У получателя не активирован оффлайн-кошелек")
-        # Баланс UTXO используется для аналитики и имитации риска двойной траты,
-        # но сам по себе не блокирует создание оффлайн‑транзакции
         utxo_balance = self._get_utxo_balance(sender_id)
         
         try:
@@ -1167,7 +1062,6 @@ class DigitalRublePlatform:
                 (generate_id("off"), tx["id"]),
             )
 
-            # Получаем wallet_id для поиска UTXO
             wallet_id = sender.get("wallet_id")
             rows = []
             if wallet_id:
@@ -1187,7 +1081,6 @@ class DigitalRublePlatform:
             candidate = dict(rows[0]) if rows else None
 
             if not candidate:
-                # UTXO нет — используем только оффлайн-кошелек
                 offline_balance = float(sender.get("offline_balance") or 0.0)
                 if offline_balance < amount:
                     error_msg = (
@@ -1197,7 +1090,6 @@ class DigitalRublePlatform:
                     self._log_failed_transaction(None, "INSUFFICIENT_OFFLINE_BALANCE", error_msg)
                     raise ValueError(error_msg)
 
-                # Списываем сумму из offline_balance пользователя и кошелька
                 from database import DatabaseManager
                 bank_db = DatabaseManager(f"bank_{sender['bank_id']}.db")
                 bank_db.execute(
@@ -1210,11 +1102,9 @@ class DigitalRublePlatform:
                         (amount, wallet_id),
                     )
             else:
-                # Есть UTXO — используем его как якорь оффлайн‑операции
                 utxo_id = candidate["id"]
                 utxo_amount = float(candidate["amount"])
 
-                # Блокируем UTXO на время обработки транзакции (защита от двойного списания)
                 lock_result = self.db.execute(
                     """
                     UPDATE utxos
@@ -1224,7 +1114,6 @@ class DigitalRublePlatform:
                     (tx["id"], utxo_id),
                 )
 
-                # Проверяем, что блокировка прошла успешно
                 locked_check = self.db.execute(
                     "SELECT locked_by_tx_id FROM utxos WHERE id = ?",
                     (utxo_id,),
@@ -1235,7 +1124,6 @@ class DigitalRublePlatform:
                     self._log_failed_transaction(None, "UTXO_LOCKED", error_msg)
                     raise ValueError(error_msg)
 
-                # Помечаем UTXO как потраченный и снимаем блокировку
                 self.db.execute(
                     """
                     UPDATE utxos
@@ -1246,9 +1134,7 @@ class DigitalRublePlatform:
                     (tx["id"], utxo_id),
                 )
 
-            # После КАЖДОЙ оффлайн‑транзакции создаём новый UTXO меньший половины суммы транзакции
-            # Это UTXO будет использовано как «якорь» для следующей операции
-            new_utxo_amount = max(0.01, round(amount * 0.4, 2))  # < 0.5 * amount
+            new_utxo_amount = max(0.01, round(amount * 0.4, 2))
             self._create_utxo(sender_id, new_utxo_amount, tx["id"])
             self._log_activity(
                 actor=sender["name"],
@@ -1352,7 +1238,6 @@ class DigitalRublePlatform:
         return {"processed": processed, "conflicts": conflicts}
 
     def _ensure_utxo_funds(self, owner_id: int, amount: float, bank_id: int, note: str) -> None:
-        """Гарантирует наличие UTXO: при дефиците докидывает сервисное UTXO (для онлайн/контрактов)."""
         balance = self._get_utxo_balance(owner_id)
         if balance >= amount:
             return
@@ -1388,12 +1273,10 @@ class DigitalRublePlatform:
                 if change > 0:
                     self._create_utxo(context.sender_id, change, tx["id"])
                 
-                # Детальное логирование обработки UTXO
                 if self.tx_logger:
-                    self.tx_logger.log_utxo_processing(tx["id"], context.sender_id, context.receiver_id, context.amount, change)
+                    self.tx_logger.log_utxo_processing(tx["id"], context.sender_id, context.receiver_id, context.amount, change            )
             
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
-            # Создаем подпись блока ЦБ РФ
             block_signature = _sign("CBR", 0, block.hash)
             self.db.execute(
                 "UPDATE blocks SET block_signature = ? WHERE height = ?",
@@ -1405,14 +1288,12 @@ class DigitalRublePlatform:
                 (cbr_sig, tx["id"]),
             )
             
-            # Детальное логирование включения в блок
             if self.tx_logger:
                 self.tx_logger.log_block_inclusion(tx["id"], block.height, block.hash)
             
             self.consensus.run_round(block.hash)
             self._replicate_block_to_banks(block, [tx])
             
-            # Детальное логирование репликации
             if self.tx_logger:
                 for bank in self.list_banks():
                     from database import DatabaseManager
@@ -1426,7 +1307,6 @@ class DigitalRublePlatform:
             
             self._log_block_flow(block, context)
             
-            # Детальное логирование финализации
             if self.tx_logger:
                 self.tx_logger.log_finalization(tx["id"])
             
@@ -1447,16 +1327,13 @@ class DigitalRublePlatform:
             context.amount,
             timestamp,
         )
-        # Детальное логирование жизненного цикла транзакции
         if self.tx_logger:
             self.tx_logger.log_initiation(tx_id, context.sender_id, context.receiver_id, context.amount, context.bank_id)
         
-        # ЭЦП: подписание хеша транзакции
         tx_hash_for_sig = self._get_transaction_hash_for_signing(
             tx_id, context.sender_id, context.receiver_id, context.amount, timestamp
         )
         
-        # Детальное логирование формирования core и хеша
         if self.tx_logger:
             core_str = f"{tx_id}:{context.sender_id}:{context.receiver_id}:{context.amount:.10f}".rstrip('0').rstrip(':') + f":{timestamp}"
             self.tx_logger.log_core_formation(tx_id, core_str)
@@ -1465,12 +1342,10 @@ class DigitalRublePlatform:
         user_sig = _sign("USER", context.sender_id, tx_hash_for_sig)
         bank_sig = _sign("BANK", context.bank_id, tx_hash_for_sig)
         
-        # Детальное логирование подписей
         if self.tx_logger:
             self.tx_logger.log_user_signature(tx_id, user_sig)
             self.tx_logger.log_bank_signature(tx_id, bank_sig)
         
-        # Крипто‑лог: формирование и подписание транзакции (для обратной совместимости)
         self._log_activity(
             actor="Система",
             stage="Формирование представления транзакции",
@@ -1489,8 +1364,6 @@ class DigitalRublePlatform:
             details=f"tx_id={tx_id}, user_sig={user_sig[:32]}..., bank_sig={bank_sig[:32]}...",
             context="Криптография",
         )
-        # Отключаем foreign keys при вставке транзакции, т.к. sender_id и receiver_id
-        # ссылаются на users в БД банков, а не в ЦБ
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
             self.db.execute(
@@ -1522,11 +1395,6 @@ class DigitalRublePlatform:
             self.db.execute("PRAGMA foreign_keys = ON")
         self.consensus.log_transaction(tx_hash)
         
-        # Подписи только что созданы и должны быть валидны
-        # Валидация не требуется сразу после создания
-        # Валидация будет выполняться при получении транзакций из других источников
-        
-        # Детальное логирование создания подписей
         if self.tx_logger:
             self.tx_logger.log_signature_validation(tx_id, True, "подписи созданы")
         
@@ -1545,7 +1413,6 @@ class DigitalRublePlatform:
     def _apply_balances(
         self, sender_id: int, receiver_id: int, amount: float, mode: str
     ) -> None:
-        """Обновляет балансы пользователей в БД банков"""
         from database import DatabaseManager
         sender = self.get_user(sender_id)
         receiver = self.get_user(receiver_id)
@@ -1561,7 +1428,6 @@ class DigitalRublePlatform:
                 "UPDATE users SET digital_balance = digital_balance + ? WHERE id = ?",
                 (amount, receiver_id),
             )
-            # Обновляем балансы кошельков в ЦБ
             if sender.get("wallet_id"):
                 self.db.execute(
                     "UPDATE wallets SET balance = balance - ? WHERE id = ?",
@@ -1585,7 +1451,6 @@ class DigitalRublePlatform:
             raise ValueError("Неизвестный режим перевода")
 
     def _get_utxo_balance(self, owner_id: int) -> float:
-        """Получает баланс UTXO для пользователя через его wallet_id"""
         user = self.get_user(owner_id)
         wallet_id = user.get("wallet_id")
         if not wallet_id:
@@ -1601,7 +1466,6 @@ class DigitalRublePlatform:
         return float(rows["total"]) if rows and rows["total"] is not None else 0.0
 
     def _get_utxos(self, owner_id: int, amount: float) -> List[Dict]:
-        """Получает UTXO для пользователя через его wallet_id"""
         user = self.get_user(owner_id)
         wallet_id = user.get("wallet_id")
         if not wallet_id:
@@ -1626,11 +1490,9 @@ class DigitalRublePlatform:
         return selected
 
     def _create_utxo(self, owner_id: int, amount: float, created_tx_id: str) -> str:
-        """Создает UTXO для пользователя, используя его wallet_id"""
         user = self.get_user(owner_id)
         wallet_id = user.get("wallet_id")
         if not wallet_id:
-            # Проверяем, существует ли кошелек в ЦБ для этого пользователя
             user_name = user.get("name", f"ID {owner_id}")
             bank_id = user.get("bank_id")
             raise ValueError(
@@ -1639,8 +1501,6 @@ class DigitalRublePlatform:
                 f"Проверьте, что пользователь был создан через create_users()."
             )
         utxo_id = generate_id("ux")
-        # Отключаем foreign keys при создании UTXO, т.к. created_tx_id может ссылаться на транзакцию,
-        # которая еще не закоммичена, или есть проблемы с foreign key constraints
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
             self.db.execute(
@@ -1675,10 +1535,8 @@ class DigitalRublePlatform:
         remaining = amount
         change = 0.0
 
-        # Блокируем все выбранные UTXO перед списанием (защита от двойного списания)
         for utxo in selected_utxos:
             utxo_id = utxo["id"]
-            # Проверяем и блокируем UTXO атомарно
             lock_result = self.db.execute(
                 """
                 UPDATE utxos
@@ -1688,14 +1546,12 @@ class DigitalRublePlatform:
                 """,
                 (spending_tx_id, utxo_id),
             )
-            # Проверяем, что блокировка прошла
             locked_check = self.db.execute(
                 "SELECT locked_by_tx_id, status FROM utxos WHERE id = ?",
                 (utxo_id,),
                 fetchone=True,
             )
             if not locked_check or locked_check["locked_by_tx_id"] != spending_tx_id or locked_check["status"] != "UNSPENT":
-                # Откатываем все блокировки при ошибке
                 for locked_utxo_id in spent_utxo_ids:
                     self.db.execute(
                         "UPDATE utxos SET locked_by_tx_id = NULL, locked_at = NULL WHERE id = ?",
@@ -1706,9 +1562,6 @@ class DigitalRublePlatform:
                 raise ValueError(error_msg)
             spent_utxo_ids.append(utxo_id)
 
-        # Теперь списываем заблокированные UTXO
-        # Отключаем foreign keys при обновлении UTXO, т.к. spent_tx_id может ссылаться на транзакцию,
-        # которая еще не закоммичена, или есть проблемы с foreign key constraints
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
             for utxo in selected_utxos:
@@ -1771,17 +1624,10 @@ class DigitalRublePlatform:
         self._log_error(error_type, error_message, context)
 
     def _replicate_block_to_banks(self, block, txs: List[Dict]) -> None:
-        """
-        Распределенная репликация: блок распространяется через P2P сеть.
-        Гарантированная репликация через legacy метод для всех узлов.
-        """
-        # Всегда используем legacy метод для гарантированной репликации на все узлы
         self._replicate_block_to_banks_legacy(block, txs)
         
-        # Дополнительно используем P2P сеть, если она доступна
         if self._distributed_enabled and self.p2p_network:
             try:
-                # Получаем полные данные транзакций
                 tx_ids = [t["id"] for t in txs]
                 full_txs = []
                 if tx_ids:
@@ -1793,10 +1639,8 @@ class DigitalRublePlatform:
                     )
                     full_txs = [dict(r) for r in rows] if rows else []
                 
-                # Распространяем блок через P2P сеть (дополнительно)
                 results = self.p2p_network.broadcast_block(block, full_txs)
                 
-                # Логируем результаты
                 successful = sum(1 for success in results.values() if success)
                 total = len(results)
                 self._log_activity(
@@ -1806,7 +1650,6 @@ class DigitalRublePlatform:
                     context="Распределенный реестр",
                 )
                 
-                # Обновляем информацию о текущем узле
                 if self.node_manager:
                     self.node_manager.update_node_status(
                         self.node_id,
@@ -1816,7 +1659,6 @@ class DigitalRublePlatform:
                     )
                 
             except Exception as e:
-                # Ошибка P2P не критична, так как legacy метод уже выполнил репликацию
                 self._log_activity(
                     actor="P2P Сеть",
                     stage="Предупреждение P2P",
@@ -1825,7 +1667,6 @@ class DigitalRublePlatform:
                 )
     
     def _replicate_block_to_banks_legacy(self, block, txs: List[Dict]) -> None:
-        """Старый метод репликации (для обратной совместимости)"""
         banks = self.list_banks()
         if not banks:
             return
@@ -1842,13 +1683,11 @@ class DigitalRublePlatform:
             )
             full_txs = [dict(r) for r in rows] if rows else []
 
-        # Получаем все транзакции блока из центральной БД
         block_id_row = self.db.execute(
             "SELECT id, block_signature FROM blocks WHERE height = ?", (block.height,), fetchone=True
         )
         block_signature = None
         if block_id_row:
-            # Преобразуем sqlite3.Row в словарь для использования .get()
             block_id_dict = dict(block_id_row)
             block_signature = block_id_dict.get("block_signature")
             all_tx_rows = self.db.execute(
@@ -1864,7 +1703,6 @@ class DigitalRublePlatform:
         else:
             all_txs = full_txs
 
-        # Реплицируем блок на все узлы
         for bank in banks:
             bank_id = bank["id"]
             try:
@@ -1876,7 +1714,6 @@ class DigitalRublePlatform:
                     fetchone=True,
                 )
                 if not exists:
-                    # Вставляем блок со всеми транзакциями
                     local_db.execute(
                         """
                         INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
@@ -1900,8 +1737,6 @@ class DigitalRublePlatform:
                         "SELECT id FROM blocks WHERE height = ?", (block.height,), fetchone=True
                     )
                     block_id = block_row["id"]
-                    # Вставляем все транзакции блока
-                    # Foreign keys уже отключены выше (строка 1762)
                     for tx in all_txs:
                         local_db.execute(
                             """
@@ -1933,7 +1768,6 @@ class DigitalRublePlatform:
                             "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
                             (block_id, tx["id"]),
                         )
-                    # Включаем foreign keys обратно после вставки
                     local_db.execute("PRAGMA foreign_keys = ON")
                     self._log_activity(
                         actor=bank["name"],
@@ -2021,7 +1855,6 @@ class DigitalRublePlatform:
             raise ValueError("Смарт-контракт инициирует только физическое лицо")
         if beneficiary["user_type"] not in {"BUSINESS", "GOVERNMENT"}:
             raise ValueError("Получатель должен быть ЮЛ или госорган")
-        # Проверка, что у обоих участников открыт цифровой кошелек
         if creator["wallet_status"] != "OPEN":
             raise ValueError(f"У создателя {creator['name']} не открыт цифровой кошелек. Необходимо открыть кошелек перед созданием смарт-контракта.")
         if beneficiary["wallet_status"] != "OPEN":
@@ -2029,7 +1862,6 @@ class DigitalRublePlatform:
         contract_id = generate_id("sc")
         if next_execution is None:
             next_execution = datetime.utcnow() + timedelta(days=36500)
-        # формируем и шифруем содержимое смарт‑контракта
         core = {
             "id": contract_id,
             "creator_id": creator_id,
@@ -2040,7 +1872,6 @@ class DigitalRublePlatform:
             "schedule": "ONCE",
             "next_execution": next_execution.isoformat(),
         }
-        # Логирование создания смарт-контракта
         self._log_activity(
             actor=creator["name"],
             stage="Инициация смарт-контракта",
@@ -2048,7 +1879,6 @@ class DigitalRublePlatform:
             context="Смарт-контракт",
         )
         
-        # ЭЦП для смарт-контракта
         contract_hash = _hash_str(f"{contract_id}:{creator_id}:{beneficiary_id}:{amount}:{next_execution.isoformat()}")
         creator_sig = _sign("USER", creator_id, contract_hash)
         bank_sig = _sign("BANK", bank_id, contract_hash)
@@ -2074,8 +1904,6 @@ class DigitalRublePlatform:
             details=f"contract_id={contract_id}, bank_sig={bank_sig}",
             context="Смарт-контракт",
         )
-        # Отключаем foreign keys при вставке смарт-контракта, т.к. creator_id и beneficiary_id
-        # ссылаются на users в БД банков, а не в ЦБ
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
             self.db.execute(
@@ -2532,9 +2360,7 @@ class DigitalRublePlatform:
         return {"ledger": str(log_path)}
     
     def _process_transaction_batch(self, batch: List[Dict]) -> None:
-        """Обработать батч транзакций"""
         try:
-            # Группируем транзакции по банкам для параллельной обработки
             transactions_by_bank: Dict[int, List[Dict]] = {}
             for tx in batch:
                 bank_id = tx.get("bank_id")
@@ -2542,11 +2368,9 @@ class DigitalRublePlatform:
                     transactions_by_bank[bank_id] = []
                 transactions_by_bank[bank_id].append(tx)
             
-            # Обрабатываем транзакции батчами по банкам
             for bank_id, txs in transactions_by_bank.items():
                 for tx in txs:
                     try:
-                        # Здесь можно добавить дополнительную обработку
                         pass
                     except Exception as e:
                         self._log_failed_transaction(tx.get("id", "unknown"), "BATCH_ERROR", str(e))
@@ -2559,15 +2383,11 @@ class DigitalRublePlatform:
             )
     
     def _process_offline_transaction_batch(self, batch: List[Dict]) -> None:
-        """Обработать батч оффлайн-транзакций"""
         try:
-            # Группируем оффлайн-транзакции по статусу
             pending_txs = [tx for tx in batch if tx.get("status") == "CREATED"]
             if pending_txs:
-                # Обрабатываем батч оффлайн-транзакций
                 for tx in pending_txs:
                     try:
-                        # Здесь можно добавить дополнительную обработку
                         pass
                     except Exception as e:
                         self._log_failed_transaction(tx.get("id", "unknown"), "OFFLINE_BATCH_ERROR", str(e))
@@ -2580,15 +2400,11 @@ class DigitalRublePlatform:
             )
     
     def _process_contract_batch(self, batch: List[Dict]) -> None:
-        """Обработать батч контрактов"""
         try:
-            # Группируем контракты по статусу
             due_contracts = [contract for contract in batch if contract.get("status") == "ACTIVE"]
             if due_contracts:
-                # Обрабатываем батч контрактов
                 for contract in due_contracts:
                     try:
-                        # Здесь можно добавить дополнительную обработку
                         pass
                     except Exception as e:
                         self._log_failed_transaction(None, "CONTRACT_BATCH_ERROR", str(e))

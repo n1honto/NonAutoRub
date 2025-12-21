@@ -118,7 +118,6 @@ class DistributedLedger:
         )
         block.duration_ms = (time.perf_counter() - start) * 1000
         block.seal()
-        # крипто‑лог: вычисление Merkle‑корня и хэша блока
         try:
             tx_hashes = [tx["hash"] for tx in tx_list]
             self.db.execute(
@@ -134,11 +133,8 @@ class DistributedLedger:
                 ),
             )
         except Exception:
-            # крипто‑лог не должен ломать формирование блока
             pass
 
-        # Подпись блока будет добавлена после создания блока в platform.py
-        # Здесь сохраняем NULL, который будет обновлен позже
         self.db.execute(
             """
             INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
@@ -206,7 +202,6 @@ class DistributedLedger:
         return [row["hash"] for row in rows]
 
     def get_block_by_hash(self, block_hash: str) -> dict:
-        """Получить блок по его хешу"""
         row = self.db.execute(
             "SELECT * FROM blocks WHERE hash = ?",
             (block_hash,),
@@ -217,7 +212,6 @@ class DistributedLedger:
         return dict(row)
 
     def get_block_by_previous_hash(self, previous_hash: str) -> dict:
-        """Получить блок по хешу предыдущего блока (восстановление цепочки)"""
         row = self.db.execute(
             "SELECT * FROM blocks WHERE previous_hash = ? ORDER BY height ASC LIMIT 1",
             (previous_hash,),
@@ -228,13 +222,11 @@ class DistributedLedger:
         return dict(row)
 
     def restore_chain_from_hash(self, start_hash: str) -> List[dict]:
-        """Восстановить цепочку блоков начиная с указанного хеша"""
         chain = []
         current_hash = start_hash
         while current_hash:
             block = self.get_block_by_previous_hash(current_hash)
             if not block:
-                # Пытаемся найти блок с таким хешем
                 block = self.get_block_by_hash(current_hash)
                 if block:
                     chain.append(block)
@@ -244,30 +236,21 @@ class DistributedLedger:
         return chain
     
     def get_chain_tip(self) -> dict:
-        """Получить последний блок (tip) цепочки"""
         return self.get_last_block()
     
     def get_chain_length(self) -> int:
-        """Получить длину цепочки (высота последнего блока + 1)"""
         last = self.get_last_block()
         return (last["height"] + 1) if last else 0
     
     def find_common_ancestor(self, other_chain_tip_hash: str) -> Optional[dict]:
-        """
-        Найти общего предка с другой цепочкой.
-        Используется для разрешения конфликтов (fork resolution).
-        """
-        # Получаем блок по хешу
         other_block = self.get_block_by_hash(other_chain_tip_hash)
         if not other_block:
             return None
         
-        # Идем назад по цепочке, ища общий блок
         our_last = self.get_last_block()
         if not our_last:
             return None
         
-        # Строим путь от нашего последнего блока к genesis
         our_path = {}
         current = our_last
         while current:
@@ -278,7 +261,6 @@ class DistributedLedger:
             if not current:
                 break
         
-        # Идем назад по другой цепочке, ища пересечение
         current = other_block
         while current:
             if current["hash"] in our_path:
@@ -292,7 +274,6 @@ class DistributedLedger:
         return None
     
     def get_blocks_from_height(self, from_height: int, to_height: Optional[int] = None) -> List[dict]:
-        """Получить блоки в диапазоне высот"""
         if to_height is None:
             rows = self.db.execute(
                 "SELECT * FROM blocks WHERE height >= ? ORDER BY height ASC",
@@ -308,7 +289,6 @@ class DistributedLedger:
         return [dict(row) for row in rows] if rows else []
     
     def has_block(self, block_hash: str) -> bool:
-        """Проверить наличие блока по хешу"""
         row = self.db.execute(
             "SELECT id FROM blocks WHERE hash = ?",
             (block_hash,),
@@ -317,7 +297,6 @@ class DistributedLedger:
         return row is not None
     
     def get_block_height(self, block_hash: str) -> Optional[int]:
-        """Получить высоту блока по хешу"""
         row = self.db.execute(
             "SELECT height FROM blocks WHERE hash = ?",
             (block_hash,),
@@ -327,7 +306,6 @@ class DistributedLedger:
 
 
 def _proof_of_authority_nonce(height: int, previous_hash: str) -> int:
-    """Deterministic nonce to mimic PoA signing."""
     digest = _hash_payload(f"{height}{previous_hash}")
     return int(digest[:8], 16)
 

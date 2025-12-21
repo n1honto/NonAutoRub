@@ -25,11 +25,10 @@ class DigitalRubleApp(tk.Tk):
             self.notebook = ttk.Notebook(self)
             self.notebook.pack(fill=tk.BOTH, expand=True)
             self._init_state()
-            self._setup_zoom()  # Настройка масштабирования
+            self._setup_zoom()
             self._build_tabs()
             self.refresh_all()
         except Exception as e:
-            # Обрабатываем ошибки при инициализации
             import traceback
             error_msg = f"Ошибка при инициализации приложения: {e}\n\n{traceback.format_exc()}"
             print(error_msg)
@@ -96,11 +95,7 @@ class DigitalRubleApp(tk.Tk):
         return mapping.get(code, code)
 
     def _setup_zoom(self) -> None:
-        """Настройка масштабирования через Ctrl + колесико мыши"""
         def on_mousewheel(event):
-            # Определяем направление прокрутки
-            # Windows: event.delta > 0 для вверх, < 0 для вниз
-            # Linux: event.num == 4 для вверх, 5 для вниз
             delta = 0
             if hasattr(event, 'delta') and event.delta != 0:
                 delta = event.delta
@@ -108,47 +103,37 @@ class DigitalRubleApp(tk.Tk):
                 delta = 1 if event.num == 4 else -1
             
             if delta > 0:
-                # Увеличение (вверх)
-                self._zoom_factor = min(self._zoom_factor * 1.1, 3.0)  # Максимум 300%
+                self._zoom_factor = min(self._zoom_factor * 1.1, 3.0)
             elif delta < 0:
-                # Уменьшение (вниз)
-                self._zoom_factor = max(self._zoom_factor / 1.1, 0.5)  # Минимум 50%
+                self._zoom_factor = max(self._zoom_factor / 1.1, 0.5)
             else:
                 return  # Нет изменения
             
             self._apply_zoom()
             return "break"
         
-        # Привязываем событие к главному окну и notebook
-        # Windows и macOS
         self.bind("<Control-MouseWheel>", on_mousewheel)
         self.notebook.bind("<Control-MouseWheel>", on_mousewheel)
         
-        # Linux (Button-4 и Button-5)
         self.bind("<Control-Button-4>", on_mousewheel)
         self.bind("<Control-Button-5>", on_mousewheel)
         self.notebook.bind("<Control-Button-4>", on_mousewheel)
         self.notebook.bind("<Control-Button-5>", on_mousewheel)
         
-        # Также привязываем ко всем дочерним виджетам через bind_all
-        # Это обеспечит работу масштабирования во всех вкладках
         self.bind_all("<Control-MouseWheel>", on_mousewheel)
         self.bind_all("<Control-Button-4>", on_mousewheel)
         self.bind_all("<Control-Button-5>", on_mousewheel)
 
     def _setup_text_zoom(self, text_widget) -> None:
-        """Настройка отдельного масштабирования для Text виджета журнала"""
-        # Инициализируем масштаб для этого виджета
         widget_id = id(text_widget)
         if widget_id not in self._text_zoom_factors:
             self._text_zoom_factors[widget_id] = {
                 'widget': text_widget,
                 'zoom_factor': 1.0,
-                'base_font_size': 8  # Базовый размер для текста в журналах
+                'base_font_size': 8
             }
         
         def on_text_mousewheel(event):
-            # Определяем направление прокрутки
             delta = 0
             if hasattr(event, 'delta') and event.delta != 0:
                 delta = event.delta
@@ -156,29 +141,24 @@ class DigitalRubleApp(tk.Tk):
                 delta = 1 if event.num == 4 else -1
             
             if delta > 0:
-                # Увеличение (вверх)
                 self._text_zoom_factors[widget_id]['zoom_factor'] = min(
                     self._text_zoom_factors[widget_id]['zoom_factor'] * 1.1, 3.0
                 )
             elif delta < 0:
-                # Уменьшение (вниз)
                 self._text_zoom_factors[widget_id]['zoom_factor'] = max(
                     self._text_zoom_factors[widget_id]['zoom_factor'] / 1.1, 0.5
                 )
             else:
                 return
             
-            # Применяем масштаб к этому виджету
             self._apply_text_zoom(widget_id)
             return "break"
         
-        # Привязываем события только к этому виджету
         text_widget.bind("<Control-MouseWheel>", on_text_mousewheel)
         text_widget.bind("<Control-Button-4>", on_text_mousewheel)
         text_widget.bind("<Control-Button-5>", on_text_mousewheel)
 
     def _apply_text_zoom(self, widget_id: int) -> None:
-        """Применяет масштаб к конкретному Text виджету"""
         if widget_id not in self._text_zoom_factors:
             return
         
@@ -187,13 +167,10 @@ class DigitalRubleApp(tk.Tk):
         zoom_factor = zoom_data['zoom_factor']
         base_size = zoom_data['base_font_size']
         
-        # Вычисляем новый размер шрифта
         new_font_size = max(6, int(base_size * zoom_factor))
         
         try:
-            # Обновляем теги с учетом масштаба
             if widget == self.activity_text:
-                # Для журнала активности
                 header_font = tkfont.Font(size=int(new_font_size * 1.25), weight="bold")
                 subheader_font = tkfont.Font(size=int(new_font_size * 1.1), weight="bold")
                 normal_font = tkfont.Font(size=new_font_size)
@@ -210,7 +187,6 @@ class DigitalRubleApp(tk.Tk):
                 widget.tag_configure("context", font=normal_bold_font)
                 widget.tag_configure("actor", font=normal_font)
             elif widget == self.cbr_log:
-                # Для журнала ЦБ
                 header_font = tkfont.Font(size=int(new_font_size * 1.1), weight="bold")
                 normal_font = tkfont.Font(size=new_font_size)
                 normal_bold_font = tkfont.Font(size=new_font_size, weight="bold")
@@ -227,24 +203,18 @@ class DigitalRubleApp(tk.Tk):
             print(f"Ошибка при применении масштаба к текстовому виджету: {e}")
 
     def _apply_zoom(self) -> None:
-        """Применяет текущий масштаб ко всем шрифтам"""
-        # Вычисляем новые размеры шрифтов
         new_font_size = max(6, int(self._base_font_size * self._zoom_factor))
         new_heading_font_size = max(7, int(self._base_heading_font_size * self._zoom_factor))
         
-        # Обновляем глобальные шрифты
         default_font = tkfont.nametofont("TkDefaultFont")
         default_font.configure(size=new_font_size)
         
         heading_font = tkfont.nametofont("TkHeadingFont")
         heading_font.configure(size=new_heading_font_size)
         
-        # Обновляем шрифты для всех виджетов
         self._update_widget_fonts(new_font_size, new_heading_font_size)
 
     def _update_widget_fonts(self, font_size: int, heading_font_size: int) -> None:
-        """Обновляет шрифты для всех виджетов в приложении"""
-        # Обновляем шрифты для Text виджетов
         text_widgets = []
         if self.activity_text:
             text_widgets.append(self.activity_text)
@@ -255,16 +225,14 @@ class DigitalRubleApp(tk.Tk):
             try:
                 current_font = widget.cget("font")
                 if isinstance(current_font, str):
-                    # Если шрифт задан строкой, создаем новый
                     font_obj = tkfont.Font(font=current_font)
-                    font_obj.configure(size=int(font_size * 0.9))  # Немного меньше для текста
+                    font_obj.configure(size=int(font_size * 0.9))
                     widget.configure(font=font_obj)
                 elif isinstance(current_font, tkfont.Font):
                     current_font.configure(size=int(font_size * 0.9))
             except Exception:
                 pass
         
-        # Обновляем шрифты для таблиц (Treeview)
         tables = [
             self.user_table, self.tx_table, self.offline_table,
             self.contract_table, self.consensus_table, self.block_table,
@@ -275,7 +243,6 @@ class DigitalRubleApp(tk.Tk):
         for table in tables:
             if table:
                 try:
-                    # Создаем новый шрифт для таблиц
                     table_font = tkfont.Font(size=font_size)
                     table.configure(font=table_font)
                 except Exception:
@@ -316,11 +283,8 @@ class DigitalRubleApp(tk.Tk):
         text.insert(tk.END, "\n".join(lines))
         text.config(state="disabled")
         self._add_copy_menu(text)
-        # Экспорт JSON отключен по требованию
 
     def _export_encrypted_json(self, default_name: str, payload: dict, bank_id: int | None) -> None:
-        # Функция удалена - шифрование больше не используется
-        # Используйте _export_plain_json для экспорта
         self._export_plain_json(default_name, payload)
 
     def _export_plain_json(self, default_name: str, payload: dict) -> None:
@@ -357,8 +321,6 @@ class DigitalRubleApp(tk.Tk):
         yl_entry.grid(row=0, column=3, padx=5, pady=5)
         self._add_entry_menu(yl_entry)
 
-        # Банки (ФО) убраны - они создаются автоматически при инициализации
-
         ttk.Label(controls, text="Гос.организации:").grid(row=0, column=4, padx=5, pady=5)
         gov_entry = ttk.Entry(controls, width=5)
         gov_entry.insert(0, "1")
@@ -367,8 +329,6 @@ class DigitalRubleApp(tk.Tk):
 
         def seed_entities() -> None:
             try:
-                # Банки создаются автоматически при инициализации платформы
-                # Проверяем наличие банков перед созданием пользователей
                 banks = self.platform.list_banks()
                 if not banks:
                     messagebox.showerror("Ошибка", "Банки не инициализированы. Перезапустите приложение.")
@@ -435,7 +395,6 @@ class DigitalRubleApp(tk.Tk):
         )
         self.wallet_user_combo = ttk.Combobox(wallet_frame, state="readonly", width=FIELD_WIDTH//10)
         self.wallet_user_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        # При смене пользователя обновляем банк
         self.wallet_user_combo.bind("<<ComboboxSelected>>", self._on_wallet_user_change)
 
         ttk.Label(wallet_frame, text="Банк (ФО):", width=LABEL_WIDTH//10).grid(
@@ -669,7 +628,6 @@ class DigitalRubleApp(tk.Tk):
         )
         self.bank_tx_table.bind("<Double-1>", self._on_bank_client_row_double_click)
         
-        # Кнопка экспорта транзакций клиента
         export_frame = ttk.Frame(tab)
         export_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
         ttk.Button(export_frame, text="Экспортировать полный лог транзакций выбранного клиента", 
@@ -709,7 +667,6 @@ class DigitalRubleApp(tk.Tk):
             side=tk.LEFT, padx=5
         )
 
-        # Панель управления журналом
         log_control_frame = ttk.Frame(tab)
         log_control_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         log_control_frame.columnconfigure(1, weight=1)
@@ -718,7 +675,6 @@ class DigitalRubleApp(tk.Tk):
             row=0, column=0, sticky="w"
         )
         
-        # Фильтры
         filter_frame = ttk.Frame(log_control_frame)
         filter_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         
@@ -846,7 +802,6 @@ class DigitalRubleApp(tk.Tk):
             command=self._ui_refresh_consensus,
         ).pack(side=tk.LEFT, padx=5)
         
-        # Кнопки для имитации отказа и восстановления ЦБ
         simulation_frame = ttk.LabelFrame(tab, text="Имитация отказа ЦБ")
         simulation_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
         
@@ -861,8 +816,6 @@ class DigitalRubleApp(tk.Tk):
             text="Экспортировать логи отказа ЦБ",
             command=self._ui_export_failure_recovery_log,
         ).pack(side=tk.LEFT, padx=5, pady=5)
-        
-        # Окно вывода логов удалено - логи доступны только через экспорт
 
     def _build_ledger_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -910,7 +863,6 @@ class DigitalRubleApp(tk.Tk):
         tab.rowconfigure(1, weight=1)
         tab.columnconfigure(0, weight=1)
 
-        # Панель управления журналом
         control_frame = ttk.Frame(tab)
         control_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         control_frame.columnconfigure(1, weight=1)
@@ -919,7 +871,6 @@ class DigitalRubleApp(tk.Tk):
             row=0, column=0, sticky="w"
         )
         
-        # Фильтры и поиск
         filter_frame = ttk.Frame(control_frame)
         filter_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         
@@ -986,12 +937,9 @@ class DigitalRubleApp(tk.Tk):
             bank_name = f"ID {tx['bank_id']} (не найден)"
         
         core_str = f"{tx['id']}:{tx['sender_id']}:{tx['receiver_id']}:{tx['amount']}:{tx['timestamp']}"
-        # Вычисляем хеш для подписи
         tx_hash_for_sig = self.platform._get_transaction_hash_for_signing(
             tx['id'], tx['sender_id'], tx['receiver_id'], tx['amount'], tx['timestamp']
         )
-        # Ищем блок, в который включена именно эта транзакция (по её ID)
-        # Ищем блок, в который включена эта транзакция (по её ID)
         block_row = self.platform.db.execute(
             """
             SELECT b.height, b.hash
@@ -1093,7 +1041,6 @@ class DigitalRubleApp(tk.Tk):
             lines.append(f"    Хеш блока: {block_row['hash']}")
             lines.append("    Связь транзакции с блоком устанавливается через block_transactions")
         else:
-            # Транзакция должна быть включена в блок автоматически
             lines.append("  Транзакция включена в блок (обработка выполняется автоматически)")
             lines.append("    Все транзакции со статусом CONFIRMED автоматически включаются в блок")
         lines.append("")
@@ -1145,7 +1092,6 @@ class DigitalRubleApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        # Безопасно получаем отправителя
         try:
             sender = self.platform.get_user(tx["sender_id"])
         except (ValueError, KeyError):
@@ -1157,7 +1103,6 @@ class DigitalRubleApp(tk.Tk):
                 "offline_expires_at": None,
             }
 
-        # Безопасно получаем получателя
         try:
             receiver = self.platform.get_user(tx["receiver_id"])
         except (ValueError, KeyError):
@@ -1166,7 +1111,6 @@ class DigitalRubleApp(tk.Tk):
                 "name": f"ID {tx['receiver_id']} (не найден)",
             }
 
-        # Безопасно получаем банк
         try:
             bank = self.platform._get_bank(tx["bank_id"])
         except (ValueError, KeyError):
@@ -1284,7 +1228,6 @@ class DigitalRubleApp(tk.Tk):
             lines.append(f"    Хеш блока: {block_row['hash']}")
             lines.append("    Связь транзакции с блоком устанавливается через block_transactions")
         else:
-            # Транзакция должна быть включена в блок автоматически после синхронизации
             lines.append("  Транзакция включена в блок (обработка выполняется автоматически)")
             lines.append("    После синхронизации с ЦБ транзакция автоматически включается в блок")
         lines.append("")
@@ -1337,7 +1280,6 @@ class DigitalRubleApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
-        # Безопасно получаем создателя контракта
         try:
             creator = self.platform.get_user(sc["creator_id"])
         except (ValueError, KeyError):
@@ -1346,7 +1288,6 @@ class DigitalRubleApp(tk.Tk):
                 "name": f"ID {sc['creator_id']} (не найден)",
             }
         
-        # Безопасно получаем бенефициара
         try:
             beneficiary = self.platform.get_user(sc["beneficiary_id"])
         except (ValueError, KeyError):
@@ -1355,7 +1296,6 @@ class DigitalRubleApp(tk.Tk):
                 "name": f"ID {sc['beneficiary_id']} (не найден)",
             }
         
-        # Безопасно получаем банк
         try:
             bank = self.platform._get_bank(sc["bank_id"])
         except (ValueError, KeyError):
@@ -1438,14 +1378,12 @@ class DigitalRubleApp(tk.Tk):
                 lines.append("    Связь транзакции с блоком устанавливается через block_transactions")
                 lines.append("")
                 lines.append("  Распределение блока по узлам сети:")
-                # Проверяем наличие блока в узлах сети
                 banks = self.platform.list_banks()
                 block_height = block_row['height']
                 block_hash = block_row['hash']
                 nodes_with_block = []
                 nodes_without_block = []
                 
-                # Проверяем главный узел (ЦБ)
                 try:
                     cbr_block = self.platform.db.execute(
                         "SELECT height, hash FROM blocks WHERE height = ?",
@@ -1459,7 +1397,6 @@ class DigitalRubleApp(tk.Tk):
                 except Exception:
                     nodes_without_block.append("Центральный банк РФ (главный реестр) - ошибка проверки")
                 
-                # Проверяем узлы банков
                 for bank in banks:
                     try:
                         from database import DatabaseManager
@@ -1476,11 +1413,9 @@ class DigitalRubleApp(tk.Tk):
                     except Exception:
                         nodes_without_block.append(f"{bank['name']} (ФО) - ошибка проверки")
                 
-                # Показываем узлы с блоком
                 for node in nodes_with_block:
                     lines.append(f"    • {node}: блок присутствует ✓")
                 
-                # Показываем узлы без блока (если есть)
                 if nodes_without_block:
                     for node in nodes_without_block:
                         lines.append(f"    • {node}: блок отсутствует ✗")
@@ -1709,7 +1644,6 @@ class DigitalRubleApp(tk.Tk):
             return
         u = dict(row)
         try:
-            # owner_id в UTXO теперь ссылается на wallet_id
             wallet_row = self.platform.db.execute(
                 "SELECT * FROM wallets WHERE id = ?", (u["owner_id"],), fetchone=True
             )
@@ -1772,7 +1706,6 @@ class DigitalRubleApp(tk.Tk):
             "created_tx_id": u["created_tx_id"],
             "spent_tx_id": u.get("spent_tx_id"),
         }
-        # Получаем bank_id из кошелька
         wallet_row = self.platform.db.execute(
             "SELECT bank_id FROM wallets WHERE id = ?", (u["owner_id"],), fetchone=True
         )
@@ -1786,7 +1719,6 @@ class DigitalRubleApp(tk.Tk):
 
 
     def _translate_tx_type(self, tx_type: str) -> str:
-        """Переводит тип транзакции на русский."""
         mapping = {
             "ONLINE": "Онлайн",
             "OFFLINE": "Оффлайн",
@@ -1796,7 +1728,6 @@ class DigitalRubleApp(tk.Tk):
         return mapping.get(tx_type, tx_type)
 
     def _translate_channel(self, channel: str) -> str:
-        """Переводит канал транзакции на русский."""
         mapping = {
             "C2C": "ФЛ → ФЛ",
             "C2B": "ФЛ → ЮЛ",
@@ -1812,7 +1743,6 @@ class DigitalRubleApp(tk.Tk):
         return mapping.get(channel, channel)
 
     def _translate_wallet_status(self, status: str) -> str:
-        """Переводит статус кошелька на русский."""
         mapping = {
             "OPEN": "Открыт",
             "CLOSED": "Закрыт",
@@ -1820,7 +1750,6 @@ class DigitalRubleApp(tk.Tk):
         return mapping.get(status, status)
 
     def _translate_status(self, status: str) -> str:
-        """Переводит статус на русский."""
         mapping = {
             "UNSPENT": "Незатрачен",
             "SPENT": "Затрачен",
@@ -1839,7 +1768,6 @@ class DigitalRubleApp(tk.Tk):
         return mapping.get(status, status)
 
     def _translate_consensus_state(self, state: str) -> str:
-        """Переводит состояние консенсуса на русский."""
         mapping = {
             "LEADER": "Лидер (ЦБ РФ)",
             "FOLLOWER": "Последователь",
@@ -1855,40 +1783,33 @@ class DigitalRubleApp(tk.Tk):
             "LAG": "Задержка",
             "FAULT": "Ошибка",
         }
-        # Игнорируем состояния выборов - ЦБ всегда лидер
         if state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
             return "Лидер (ЦБ РФ)"  # Всегда показываем как лидер
         return mapping.get(state, state)
 
     def _add_copy_menu(self, widget) -> None:
-        """Добавляет контекстное меню с копированием для Text виджетов и таблиц"""
         def copy_text():
             try:
                 if isinstance(widget, tk.Text):
-                    # Для Text виджетов
                     if widget.tag_ranges(tk.SEL):
                         text = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
                     else:
                         text = widget.get("1.0", tk.END)
                 elif isinstance(widget, ttk.Treeview):
-                    # Для таблиц (Treeview)
                     selection = widget.selection()
                     lines = []
                     
-                    # Добавляем заголовки колонок
                     columns = widget["columns"]
                     if columns:
                         headers = [widget.heading(col, "text") or col for col in columns]
                         lines.append("\t".join(headers))
                     
                     if selection:
-                        # Копируем выбранные строки
                         for item_id in selection:
                             values = widget.item(item_id, "values")
                             if values:
                                 lines.append("\t".join(str(v) for v in values))
                     else:
-                        # Копируем все данные таблицы
                         for item_id in widget.get_children():
                             values = widget.item(item_id, "values")
                             if values:
@@ -1915,7 +1836,6 @@ class DigitalRubleApp(tk.Tk):
         widget.bind("<Control-c>", lambda e: copy_text())  # Ctrl+C
 
     def _add_entry_menu(self, widget) -> None:
-        """Добавляет контекстное меню и поддержку вставки для Entry виджетов"""
         def copy_text(event=None):
             try:
                 if widget.selection_present():
@@ -1946,10 +1866,8 @@ class DigitalRubleApp(tk.Tk):
             try:
                 text = self.clipboard_get()
                 if text:
-                    # Удаляем выделенный текст, если есть
                     if widget.selection_present():
                         widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                    # Вставляем в позицию курсора
                     widget.insert(tk.INSERT, text)
                 return "break"  # Предотвращаем стандартную обработку
             except Exception as e:
@@ -2007,12 +1925,10 @@ class DigitalRubleApp(tk.Tk):
             self._refresh_user_lists()
             self._refresh_tables()
             self._refresh_consensus_canvas()
-            self._refresh_errors_table()  # Обновляем вкладку ЦБ и ошибки
-            # Запускаем анимацию консенсуса, если она еще не запущена
+            self._refresh_errors_table()
             if self.consensus_canvas and self._consensus_anim_job is None:
                 self._start_consensus_animation()
         except Exception as e:
-            # Логируем ошибку, но не прерываем работу приложения
             import traceback
             print(f"Ошибка при обновлении данных: {e}")
             traceback.print_exc()
@@ -2020,7 +1936,6 @@ class DigitalRubleApp(tk.Tk):
     def _refresh_user_lists(self) -> None:
         users = self.platform.list_users()
         
-        # Группируем пользователей по типам и сортируем по возрастанию ID
         individuals = sorted(
             [u for u in users if u["user_type"] == "INDIVIDUAL"],
             key=lambda x: x["id"]
@@ -2034,19 +1949,15 @@ class DigitalRubleApp(tk.Tk):
             key=lambda x: x["id"]
         )
         
-        # Формируем список с группировкой по типам (без заголовков, только пользователи)
         formatted = []
-        # Сначала физические пользователи (по возрастанию ID)
         formatted.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in individuals
         ])
-        # Затем юридические пользователи (по возрастанию ID)
         formatted.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in businesses
         ])
-        # Затем государственные учреждения (по возрастанию ID)
         formatted.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in governments
@@ -2068,14 +1979,11 @@ class DigitalRubleApp(tk.Tk):
                 elif not combo.get() and formatted:
                     combo.current(0)
         
-        # Для получателей смарт-контрактов только BUSINESS и GOVERNMENT (по возрастанию ID)
         receivers = []
-        # Сначала юридические пользователи (по возрастанию ID)
         receivers.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in businesses
         ])
-        # Затем государственные учреждения (по возрастанию ID)
         receivers.extend([
             f"{u['id']} | {u['name']} ({self._user_type_label(u['user_type'])})"
             for u in governments
@@ -2101,13 +2009,11 @@ class DigitalRubleApp(tk.Tk):
         self._refresh_online_combos()
 
     def _clear_tree(self, tree) -> None:
-        """Очищает Treeview от всех элементов"""
         if tree:
             for item in tree.get_children():
                 tree.delete(item)
 
     def _on_wallet_user_change(self, event=None) -> None:
-        """Обновляет выбранный банк при смене пользователя в блоке открытия кошелька"""
         try:
             if not self.wallet_user_combo or not self.wallet_bank_combo:
                 return
@@ -2125,14 +2031,12 @@ class DigitalRubleApp(tk.Tk):
                 None,
             )
             if bank_value:
-                # Убедимся, что значение есть в списке
                 values = list(self.wallet_bank_combo["values"]) if self.wallet_bank_combo["values"] else []
                 if bank_value not in values:
                     values.append(bank_value)
                     self.wallet_bank_combo["values"] = values
                 self.wallet_bank_combo.set(bank_value)
         except Exception:
-            # Не ломаем UI при ошибке автоподстановки
             pass
 
     def _refresh_tables(self) -> None:
@@ -2140,7 +2044,6 @@ class DigitalRubleApp(tk.Tk):
             self._clear_tree(self.user_table)
             users = self.platform.list_users()
             
-            # Группируем пользователей по типам и сортируем по возрастанию ID
             individuals = sorted(
                 [u for u in users if u["user_type"] == "INDIVIDUAL"],
                 key=lambda x: x["id"]
@@ -2154,7 +2057,6 @@ class DigitalRubleApp(tk.Tk):
                 key=lambda x: x["id"]
             )
             
-            # Сначала физические пользователи (по возрастанию ID)
             for u in individuals:
                 self.user_table.insert(
                     "",
@@ -2171,7 +2073,6 @@ class DigitalRubleApp(tk.Tk):
                         u.get("offline_expires_at", "") or "-",
                     ),
                 )
-            # Затем юридические пользователи (по возрастанию ID)
             for u in businesses:
                 self.user_table.insert(
                     "",
@@ -2188,7 +2089,6 @@ class DigitalRubleApp(tk.Tk):
                         u.get("offline_expires_at", "") or "-",
                     ),
                 )
-            # Затем государственные учреждения (по возрастанию ID)
             for u in governments:
                 self.user_table.insert(
                     "",
@@ -2209,7 +2109,6 @@ class DigitalRubleApp(tk.Tk):
         if self.tx_table:
             self._clear_tree(self.tx_table)
             for tx in self.platform.get_transactions():
-                # Безопасное получение данных пользователей (могут быть старые транзакции)
                 try:
                     sender = self.platform.get_user(tx["sender_id"])
                     sender_name = sender["name"]
@@ -2307,7 +2206,6 @@ class DigitalRubleApp(tk.Tk):
                     ),
                 )
 
-        # Обновляем блоки и UTXO
         if self.block_table:
             self._clear_tree(self.block_table)
             rows = self.platform.db.execute(
@@ -2338,7 +2236,6 @@ class DigitalRubleApp(tk.Tk):
             )
             for row in rows or []:
                 try:
-                    # owner_id в UTXO теперь ссылается на wallet_id
                     wallet_row = self.platform.db.execute(
                         "SELECT * FROM wallets WHERE id = ?", (row["owner_id"],), fetchone=True
                     )
@@ -2395,13 +2292,10 @@ class DigitalRubleApp(tk.Tk):
         if self.consensus_table:
             self._clear_tree(self.consensus_table)
             events = self.platform.consensus.get_recent_events(limit=100)
-            # Группируем события по блокам для лучшего отображения
             for event in events:
-                # Фильтруем события выборов - ЦБ всегда лидер, выборов не происходит
                 if event.state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
-                    continue  # Пропускаем события выборов
+                    continue
                 
-                # Форматируем время для отображения
                 try:
                     from datetime import datetime
                     dt = datetime.fromisoformat(event.created_at.replace('Z', '+00:00'))
@@ -2421,20 +2315,17 @@ class DigitalRubleApp(tk.Tk):
                     ),
                 )
         
-        # Запускаем анимацию консенсуса, если она еще не запущена
         if self.consensus_canvas and self._consensus_anim_job is None:
             self._start_consensus_animation()
 
         if self.activity_text:
             self.activity_text.delete("1.0", tk.END)
             
-            # Настройка тегов для форматирования с учетом масштаба
             widget_id = id(self.activity_text)
             zoom_factor = self._text_zoom_factors.get(widget_id, {}).get('zoom_factor', 1.0)
             base_size = self._text_zoom_factors.get(widget_id, {}).get('base_font_size', 8)
             font_size = max(6, int(base_size * zoom_factor))
             
-            # Создаем шрифты с учетом масштаба
             header_font = tkfont.Font(size=int(font_size * 1.25), weight="bold")
             subheader_font = tkfont.Font(size=int(font_size * 1.1), weight="bold")
             normal_font = tkfont.Font(size=font_size)
@@ -2451,14 +2342,12 @@ class DigitalRubleApp(tk.Tk):
             self.activity_text.tag_configure("context", foreground="#7c3aed", font=normal_bold_font)
             self.activity_text.tag_configure("actor", foreground="#059669", font=normal_font)
             
-            # Получаем все логи в хронологическом порядке
             all_entries = self.platform.get_activity_log(limit=1000)
             
             if not all_entries:
                 self.activity_text.insert(tk.END, "Журнал активности пуст.\n", "details")
                 return
             
-            # Применяем фильтры и поиск
             filter_value = self.activity_filter_combo.get() if hasattr(self, 'activity_filter_combo') and self.activity_filter_combo else "Все"
             search_text = self.activity_search_entry.get().lower() if hasattr(self, 'activity_search_entry') and self.activity_search_entry else ""
             
@@ -2469,11 +2358,10 @@ class DigitalRubleApp(tk.Tk):
                 details = entry.get("details", "")
                 actor = entry.get("actor", "")
                 
-                # Фильтр по контексту
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
@@ -2487,7 +2375,6 @@ class DigitalRubleApp(tk.Tk):
                             if expected_contexts != context:
                                 continue
                 
-                # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
                     try:
                         import json as _json_mod
@@ -2503,7 +2390,6 @@ class DigitalRubleApp(tk.Tk):
                 self.activity_text.insert(tk.END, f"Нет записей, соответствующих фильтру '{filter_value}' и поиску '{search_text}'.\n", "details")
                 return
             
-            # Отображаем все логи последовательно как события системы
             for entry in entries:
                 stage = entry.get("stage", "")
                 details = entry.get("details", "")
@@ -2511,19 +2397,16 @@ class DigitalRubleApp(tk.Tk):
                 context = entry.get("context", "Общее")
                 created_at = entry.get("created_at", "")
                 
-                # Форматируем время
                 try:
                     from datetime import datetime
                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Дата и время с миллисекундами
+                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
                 except:
                     time_str = created_at if created_at else ""
                 
-                # Проверяем на конфликты и ошибки
                 lower = (stage + details).lower()
                 is_conflict = "конфликт" in lower or "двойной трат" in lower or "ошибка" in lower or "error" in lower
                 
-                # Формируем строку события в формате лога
                 log_parts = []
                 if time_str:
                     log_parts.append(f"[{time_str}]")
@@ -2534,19 +2417,15 @@ class DigitalRubleApp(tk.Tk):
                 if actor and actor != "Система":
                     log_parts.append(f"[{actor}]")
                 
-                # Основная строка события
                 event_line = " ".join(log_parts)
                 if details:
                     event_line += f" {details}"
                 
-                # Вставляем строку события
                 self.activity_text.insert(tk.END, event_line + "\n", "conflict" if is_conflict else "details")
             
-            # Прокручиваем в начало для хронологического просмотра
             self.activity_text.see("1.0")
     
     def _format_context_name(self, context: str) -> str:
-        """Форматирует название контекста для отображения"""
         context_map = {
             "Транзакция": "📝 ТРАНЗАКЦИЯ",
             "Оффлайн-транзакция": "📱 ОФФЛАЙН-ТРАНЗАКЦИЯ",
@@ -2604,13 +2483,11 @@ class DigitalRubleApp(tk.Tk):
         if self.cbr_log:
             self.cbr_log.delete("1.0", tk.END)
             
-            # Настройка тегов для форматирования с учетом масштаба
             widget_id = id(self.cbr_log)
             zoom_factor = self._text_zoom_factors.get(widget_id, {}).get('zoom_factor', 1.0)
             base_size = self._text_zoom_factors.get(widget_id, {}).get('base_font_size', 8)
             font_size = max(6, int(base_size * zoom_factor))
             
-            # Создаем шрифты с учетом масштаба
             header_font = tkfont.Font(size=int(font_size * 1.1), weight="bold")
             normal_font = tkfont.Font(size=font_size)
             normal_bold_font = tkfont.Font(size=font_size, weight="bold")
@@ -2624,14 +2501,12 @@ class DigitalRubleApp(tk.Tk):
             self.cbr_log.tag_configure("context", foreground="#dc2626", font=normal_bold_font)
             self.cbr_log.tag_configure("separator", foreground="#9ca3af", font=small_font)
             
-            # Получаем ВСЕ логи системы - ЦБ видит все действия
             all_entries = self.platform.get_activity_log(limit=2000)
             
             if not all_entries:
                 self.cbr_log.insert(tk.END, "Журнал событий ЦБ пуст. Выполните действия в системе для генерации логов.\n", "details")
                 return
             
-            # Применяем фильтры
             filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
             search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
             
@@ -2642,11 +2517,10 @@ class DigitalRubleApp(tk.Tk):
                 details = entry.get("details", "")
                 actor = entry.get("actor", "")
                 
-                # Фильтр по контексту
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
@@ -2660,7 +2534,6 @@ class DigitalRubleApp(tk.Tk):
                             if expected_contexts != context:
                                 continue
                 
-                # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
                     try:
                         import json as _json_mod
@@ -2676,7 +2549,6 @@ class DigitalRubleApp(tk.Tk):
                 self.cbr_log.insert(tk.END, f"Нет записей, соответствующих фильтру '{filter_value}' и поиску '{search_text}'.\n", "details")
                 return
             
-            # Отображаем все логи последовательно с детальной структурой
             prev_context = None
             
             for entry in entries:
@@ -2686,61 +2558,49 @@ class DigitalRubleApp(tk.Tk):
                 context = entry.get("context", "Общее")
                 created_at = entry.get("created_at", "")
                 
-                # Форматируем время
                 try:
                     from datetime import datetime
                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    time_str = dt.strftime("%H:%M:%S.%f")[:-3]  # Миллисекунды
+                    time_str = dt.strftime("%H:%M:%S.%f")[:-3]
                 except:
                     time_str = created_at[-12:] if len(created_at) >= 12 else created_at
                 
-                # Разделитель при смене контекста
                 if prev_context and prev_context != context:
                     separator = f"\n{'='*100}\n"
                     self.cbr_log.insert(tk.END, separator, "separator")
                 
-                # Заголовок контекста (если изменился)
                 if prev_context != context:
                     context_display = self._format_context_name(context)
                     header_text = f"{context_display}\n"
                     self.cbr_log.insert(tk.END, header_text, "header")
                 
-                # Этап с временем
                 stage_text = f"  [{time_str}] {stage}\n"
                 self.cbr_log.insert(tk.END, stage_text, "stage")
                 
-                # Актор
                 if actor and actor != "Система":
                     actor_text = f"    Актор: {actor}\n"
                     self.cbr_log.insert(tk.END, actor_text, "actor")
                 
-                # Детали (полностью, без обрезания)
                 if details:
-                    # Разбиваем детали на строки для лучшей читаемости
                     detail_lines = details.split(", ")
                     for detail_line in detail_lines:
                         if detail_line.strip():
                             detail_text = f"    {detail_line.strip()}\n"
                             self.cbr_log.insert(tk.END, detail_text, "details")
                 
-                # Пустая строка между записями
                 self.cbr_log.insert(tk.END, "\n", "separator")
                 
                 prev_context = context
             
-            # Прокручиваем в начало для хронологического просмотра
             self.cbr_log.see("1.0")
     
     def _export_cbr_log_csv(self) -> None:
-        """Экспорт журнала ЦБ в CSV (использует те же отфильтрованные данные, что и журнал)"""
         try:
-            # Получаем те же данные, что и в журнале (с учетом фильтров)
             all_entries = self.platform.get_activity_log(limit=2000)
             if not all_entries:
                 messagebox.showinfo("Экспорт", "Нет данных для экспорта")
                 return
             
-            # Применяем те же фильтры, что и в журнале
             filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
             search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
             
@@ -2751,11 +2611,10 @@ class DigitalRubleApp(tk.Tk):
                 details = entry.get("details", "")
                 actor = entry.get("actor", "")
                 
-                # Фильтр по контексту
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
@@ -2769,7 +2628,6 @@ class DigitalRubleApp(tk.Tk):
                             if expected_contexts != context:
                                 continue
                 
-                # Поиск по ключевым словам
                 if search_text:
                     searchable = f"{context} {stage} {details} {actor}".lower()
                     if search_text not in searchable:
@@ -2806,15 +2664,12 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
     
     def _export_cbr_log_json(self) -> None:
-        """Экспорт журнала ЦБ в JSON (использует те же отфильтрованные данные, что и журнал)"""
         try:
-            # Получаем те же данные, что и в журнале (с учетом фильтров)
             all_entries = self.platform.get_activity_log(limit=2000)
             if not all_entries:
                 messagebox.showinfo("Экспорт", "Нет данных для экспорта")
                 return
             
-            # Применяем те же фильтры, что и в журнале
             filter_value = self.cbr_filter_combo.get() if hasattr(self, 'cbr_filter_combo') and self.cbr_filter_combo else "Все"
             search_text = self.cbr_search_entry.get().lower() if hasattr(self, 'cbr_search_entry') and self.cbr_search_entry else ""
             
@@ -2825,11 +2680,10 @@ class DigitalRubleApp(tk.Tk):
                 details = entry.get("details", "")
                 actor = entry.get("actor", "")
                 
-                # Фильтр по контексту
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
@@ -2843,7 +2697,6 @@ class DigitalRubleApp(tk.Tk):
                             if expected_contexts != context:
                                 continue
                 
-                # Поиск по ключевым словам
                 if search_text:
                     searchable = f"{context} {stage} {details} {actor}".lower()
                     if search_text not in searchable:
@@ -2870,7 +2723,6 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
     
     def _export_activity_log_csv(self) -> None:
-        """Экспорт журнала этапов в CSV"""
         try:
             entries = self.platform.get_activity_log(limit=1000)
             if not entries:
@@ -2902,7 +2754,6 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showerror("Ошибка экспорта", f"Ошибка при экспорте: {e}")
     
     def _export_activity_log_json(self) -> None:
-        """Экспорт журнала этапов в JSON"""
         try:
             entries = self.platform.get_activity_log(limit=1000)
             if not entries:
@@ -2940,18 +2791,14 @@ class DigitalRubleApp(tk.Tk):
                 return
             width = int(canvas.winfo_width() or 1200)
             
-            # Разделяем ЦБ и банки явно
             cbr_nodes = [n for n in nodes if "CBR" in n.upper() or "ЦБ" in n.upper()]
             bank_nodes = [n for n in nodes if "BANK" in n.upper() and n not in cbr_nodes]
             
-            # Определяем лидера из событий консенсуса или по умолчанию
             current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
             active_actor = self._consensus_active_actor if hasattr(self, '_consensus_active_actor') else None
             
-            # Проверяем, есть ли временный лидер в событиях
             temp_leader = None
             if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
-                # Ищем последнее событие LEADER_ELECTED или LEADER_APPEND
                 for event in reversed(self._consensus_anim_events[:self._consensus_anim_index + 1]):
                     if event.get("state") in {"LEADER_ELECTED", "LEADER_APPEND", "LEADER"}:
                         actor = event.get("actor", "")
@@ -2959,10 +2806,8 @@ class DigitalRubleApp(tk.Tk):
                             temp_leader = actor
                             break
             
-            # ЦБ всегда сверху (если есть и не отказал)
             leader = None
             if cbr_nodes:
-                # Проверяем, не отказал ли ЦБ (по событиям)
                 cbr_failed = False
                 if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
                     for event in self._consensus_anim_events[:self._consensus_anim_index + 1]:
@@ -2973,7 +2818,6 @@ class DigitalRubleApp(tk.Tk):
                 if not cbr_failed:
                     leader = cbr_nodes[0]
             
-            # Если ЦБ отказал или нет, используем временного лидера из банков
             if not leader:
                 if temp_leader and temp_leader in bank_nodes:
                     leader = temp_leader
@@ -2982,7 +2826,6 @@ class DigitalRubleApp(tk.Tk):
                     leader = active_actor
                     bank_nodes = [n for n in bank_nodes if n != active_actor]
                 elif bank_nodes:
-                    # Если временный лидер не определен, берем первый банк
                     leader = bank_nodes[0]
                     bank_nodes = bank_nodes[1:]
 
@@ -2991,24 +2834,19 @@ class DigitalRubleApp(tk.Tk):
                 recent_events = self.platform.consensus.get_recent_events(limit=1)
                 active_actor = recent_events[0].actor if recent_events and len(recent_events) > 0 else None
 
-            # ЦБ отображается сверху по центру
             leader_x = width // 2
-            leader_y = 80  # Выше, чем банки
+            leader_y = 80
             
-            # Инициализируем значения по умолчанию
-            leader_fill = "#10b981"  # По умолчанию зеленый
+            leader_fill = "#10b981"
             leader_label = "Нет лидера"
             
             if leader:
-                # Определяем, является ли лидер ЦБ
                 is_cbr = "CBR" in leader.upper() or "ЦБ" in leader.upper()
                 
-                # ЦБ всегда зеленый, временный лидер (ФО) тоже зеленый когда активен
                 if is_cbr:
-                    leader_fill = "#10b981"  # ЦБ всегда зеленый
+                    leader_fill = "#10b981"
                     leader_label = "ЦБ РФ"
                 else:
-                    # Временный лидер (ФО) - всегда зеленый
                     leader_fill = "#10b981"
                     leader_label = leader
                 
@@ -3024,34 +2862,26 @@ class DigitalRubleApp(tk.Tk):
                 spacing = max(calculated_spacing, min_spacing)
                 if spacing < min_spacing:
                     spacing = min_spacing
-                y_banks = 200  # Банки в строчку ниже ЦБ
+                y_banks = 200
             
-            # Определяем активные узлы на текущем этапе
             active_nodes = self._consensus_active_nodes if hasattr(self, '_consensus_active_nodes') else set()
-            # Активными могут быть только банки (ФО), не ЦБ
             if active_actor and active_actor != leader and active_actor in bank_nodes:
-                # Проверяем, что активный актор - это ФО, а не ЦБ
                 if "CBR" not in active_actor.upper() and "ЦБ" not in active_actor.upper():
                     active_nodes.add(active_actor)
             
-            # Находим кандидата из событий для этапа голосования
             candidate_node = None
             current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
             if current_state in {"ELECTION_START", "CANDIDATE", "VOTE_GRANTED", "VOTE_DENIED"}:
-                # Ищем кандидата в активных узлах или из событий
                 if active_actor and "BANK" in active_actor.upper() and current_state in {"ELECTION_START", "CANDIDATE"}:
                     candidate_node = active_actor
                 else:
-                    # Ищем кандидата в активных узлах
                     for node_id in active_nodes:
                         if "BANK" in node_id.upper():
                             candidate_node = node_id
                             break
             
-            # Сохраняем координаты узлов для анимации стрелок
             node_positions = {}
             
-            # Если лидер - это банк (временный лидер), сохраняем его координаты сверху
             if leader and "BANK" in leader.upper():
                 node_positions[leader] = (leader_x, leader_y)
             
@@ -3064,7 +2894,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 node_positions[node] = (x, y_banks)
                 
-                # Определяем цвет узла в зависимости от активности
                 if node in active_nodes or node == active_actor:
                     fill_color = "#10b981"  # Зеленый для активных
                     outline_width = 3
@@ -3078,19 +2907,14 @@ class DigitalRubleApp(tk.Tk):
                 )
                 canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 9, "bold"), width=120)
                 
-                # Определяем тип связи в зависимости от этапа консенсуса
                 current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
                 
-                # ЭТАП 1: ГОЛОСОВАНИЕ ЗА ПРИНЯТИЕ БЛОКА (штатный режим)
-                # Стрелки от лидера (ЦБ или временного) к узлам (запрос голосования) и от узлов к лидеру (подтверждение)
                 if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-                    if leader:  # Только если есть лидер (ЦБ или временный)
-                        # Определяем координаты лидера
+                    if leader:
                         leader_draw_x = leader_x
                         leader_draw_y = leader_y
                         leader_offset = 45
                         
-                        # Если лидер - временный (ФО), он тоже сверху
                         if "BANK" in leader.upper() and leader in node_positions:
                             temp_x, temp_y = node_positions[leader]
                             if temp_y != leader_y:
@@ -3098,8 +2922,6 @@ class DigitalRubleApp(tk.Tk):
                                 leader_draw_y = temp_y
                                 leader_offset = 35
                         
-                        # Лидер отправляет запросы голосования всем узлам
-                        # Показываем стрелку от лидера к узлу (запрос)
                         canvas.create_line(
                             leader_draw_x,
                             leader_draw_y + leader_offset,
@@ -3111,10 +2933,8 @@ class DigitalRubleApp(tk.Tk):
                             arrowshape=(8, 10, 3),
                             dash=(3, 3)
                         )
-                        # Если узел уже проголосовал, показываем обратную стрелку (подтверждение)
                         if node in active_nodes or node == active_actor:
                             if current_state == "VOTE_GRANTED":
-                                # Стрелка от узла к лидеру (подтверждение голосования)
                                 canvas.create_line(
                                     x,
                                     y_banks + 35,
@@ -3126,19 +2946,13 @@ class DigitalRubleApp(tk.Tk):
                                     arrowshape=(8, 10, 3)
                                 )
                 
-                # ЭТАП 2: ГОЛОСОВАНИЕ (выборы временного лидера при отказе ЦБ)
-                # Стрелки от банков к кандидату (временному лидеру)
                 elif current_state in {"ELECTION_START", "CANDIDATE"}:
-                    # Если этот узел - кандидат, показываем стрелки от других банков к нему
                     if candidate_node and node == candidate_node:
-                        # Рисуем стрелки от других банков к кандидату
                         for other_node in bank_nodes:
                             if other_node != node:
                                 other_x, _ = node_positions.get(other_node, (0, 0))
                                 if other_x > 0:
-                                    # Определяем стиль стрелки в зависимости от того, проголосовал ли узел
                                     if other_node in active_nodes:
-                                        # Узел уже проголосовал - сплошная стрелка
                                         canvas.create_line(
                                             other_x,
                                             y_banks + 35,
@@ -3150,7 +2964,6 @@ class DigitalRubleApp(tk.Tk):
                                             arrowshape=(8, 10, 3)
                                         )
                                     else:
-                                        # Узел еще не проголосовал - пунктирная стрелка
                                         canvas.create_line(
                                             other_x,
                                             y_banks + 35,
@@ -3162,16 +2975,13 @@ class DigitalRubleApp(tk.Tk):
                                             arrowshape=(6, 8, 2),
                                             dash=(5, 5)
                                         )
-                    # Если этот узел голосует за кандидата (только для выборов лидера)
                     elif candidate_node and current_state == "VOTE_GRANTED" and node in active_nodes:
-                        # Проверяем, что это голосование за выборы лидера, а не за принятие блока
                         is_election = any(e.get("state") in {"ELECTION_START", "CANDIDATE"} 
                                         for e in (self._consensus_anim_events[:self._consensus_anim_index + 1] 
                                                  if hasattr(self, '_consensus_anim_events') else []))
                         if is_election:
                             candidate_x, _ = node_positions.get(candidate_node, (0, 0))
                             if candidate_x > 0:
-                                # Стрелка от этого узла к кандидату
                                 canvas.create_line(
                                     x,
                                     y_banks + 35,
@@ -3183,38 +2993,29 @@ class DigitalRubleApp(tk.Tk):
                                     arrowshape=(8, 10, 3)
                                 )
                 
-                # ЭТАП 3: РЕПЛИКАЦИЯ (после голосования за принятие блока)
-                # Стрелки от лидера ко ВСЕМ банкам (все ФО участвуют в репликации)
                 elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
-                    if leader:  # Только если есть лидер
-                        # ВСЕ банки получают репликацию, показываем стрелки ко всем
-                        # ВАЖНО: Проверяем, что узел получил репликацию (в активных узлах, в событиях или просто показываем всем)
-                        node_received = (node in active_nodes or 
+                    if leader:
+                        node_received = (node in active_nodes or
                                        node == active_actor)
                         
-                        # Также проверяем события репликации для этого узла
                         if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
                             for e in self._consensus_anim_events[:self._consensus_anim_index + 1]:
                                 if e.get("actor") == node and e.get("state") == "REPLICATION":
                                     node_received = True
                                     break
                         
-                        # Определяем координаты лидера (может быть ЦБ сверху или временный лидер)
                         leader_draw_x = leader_x
                         leader_draw_y = leader_y
-                        leader_offset = 45  # Смещение для стрелки от лидера
+                        leader_offset = 45
                         
-                        # Если лидер - временный (ФО), он тоже сверху, используем те же координаты
                         if "BANK" in leader.upper() and leader in node_positions:
                             temp_x, temp_y = node_positions[leader]
-                            # Если временный лидер не сверху, используем его координаты
                             if temp_y != leader_y:
                                 leader_draw_x = temp_x
                                 leader_draw_y = temp_y
                                 leader_offset = 35
                         
                         if node_received:
-                            # Анимированная стрелка от лидера к узлу (получил репликацию)
                             line_color = "#10b981"
                             line_width = 3
                             canvas.create_line(
@@ -3228,8 +3029,6 @@ class DigitalRubleApp(tk.Tk):
                                 arrowshape=(10, 12, 3)
                             )
                         else:
-                            # Показываем стрелку для узла, который еще получает репликацию
-                            # ВСЕ узлы должны получать репликацию, поэтому показываем всем
                             canvas.create_line(
                                 leader_draw_x,
                                 leader_draw_y + leader_offset,
@@ -3238,20 +3037,16 @@ class DigitalRubleApp(tk.Tk):
                                 arrow=tk.LAST,
                                 fill="#10b981",  # Зеленый для всех репликаций
                                 width=2,
-                                dash=(3, 3)  # Пунктирная для ожидающих
+                                dash=(3, 3)
                             )
                 
-                # Обычная работа (штатный режим) - всегда рисуем стрелки от лидера к узлам
-                # Это обеспечивает визуализацию даже после отказа ЦБ
                 if current_state not in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED",
                                         "ELECTION_START", "CANDIDATE", "REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
                     if leader:
-                        # Определяем координаты лидера
                         leader_draw_x = leader_x
                         leader_draw_y = leader_y
                         leader_offset = 45
                         
-                        # Если лидер - временный (ФО), он тоже сверху
                         if "BANK" in leader.upper() and leader in node_positions:
                             temp_x, temp_y = node_positions[leader]
                             if temp_y != leader_y:
@@ -3259,9 +3054,7 @@ class DigitalRubleApp(tk.Tk):
                                 leader_draw_y = temp_y
                                 leader_offset = 35
                         
-                        # Рисуем стрелку от лидера к узлу (всегда, как до отказа ЦБ)
                         if node in active_nodes or node == active_actor:
-                            # Анимированная стрелка от лидера к активному узлу
                             line_color = "#10b981"
                             line_width = 3
                             canvas.create_line(
@@ -3275,7 +3068,6 @@ class DigitalRubleApp(tk.Tk):
                                 arrowshape=(10, 12, 3)
                             )
                         else:
-                            # Показываем стрелку для неактивного узла (пунктирная)
                             canvas.create_line(
                                 leader_draw_x,
                                 leader_draw_y + leader_offset,
@@ -3289,9 +3081,7 @@ class DigitalRubleApp(tk.Tk):
             subtitle = self._consensus_active_event or ""
             current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
             
-            # Определяем этап консенсуса для отображения
             if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-                # Этап голосования за принятие блока
                 if self._consensus_votes is not None and self._consensus_total_banks is not None:
                     votes = self._consensus_votes
                     total_banks = self._consensus_total_banks
@@ -3306,7 +3096,6 @@ class DigitalRubleApp(tk.Tk):
                     font=("TkDefaultFont", 10, "bold")
                 )
             elif current_state in {"ELECTION_START", "CANDIDATE"}:
-                # Этап выборов временного лидера
                 if self._consensus_votes is not None and self._consensus_total_banks is not None:
                     votes = self._consensus_votes
                     total_banks = self._consensus_total_banks
@@ -3321,7 +3110,6 @@ class DigitalRubleApp(tk.Tk):
                     font=("TkDefaultFont", 10, "bold")
                 )
             elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
-                # Этап репликации
                 if self._consensus_replications is not None and self._consensus_total_banks is not None:
                     replications = self._consensus_replications
                     total_banks = self._consensus_total_banks
@@ -3336,7 +3124,6 @@ class DigitalRubleApp(tk.Tk):
                     font=("TkDefaultFont", 10, "bold")
                 )
             else:
-                # Обычный режим
                 if self._consensus_votes is not None and self._consensus_total_banks is not None:
                     votes = self._consensus_votes
                     replications = self._consensus_replications or 0
@@ -3398,7 +3185,6 @@ class DigitalRubleApp(tk.Tk):
                             text=f"Блок {row['height']}",
                             fill="black",
                         )
-                        # Показываем хеш и количество транзакций
                         hash_text = row["hash"][:12] + "..."
                         ledger_canvas.create_text(
                             x,
@@ -3408,7 +3194,6 @@ class DigitalRubleApp(tk.Tk):
                             font=("TkDefaultFont", 7),
                         )
                         
-                        # Получаем количество транзакций в блоке
                         tx_count_row = self.platform.db.execute(
                             "SELECT COUNT(*) as count FROM block_transactions bt JOIN blocks b ON b.id = bt.block_id WHERE b.height = ?",
                             (row["height"],),
@@ -3423,9 +3208,7 @@ class DigitalRubleApp(tk.Tk):
                             font=("TkDefaultFont", 7, "bold"),
                         )
                         
-                        # Интерактивная навигация - делаем блок кликабельным
                         def on_block_click(event, block_height=row["height"]):
-                            # Находим блок в таблице и выделяем его
                             if self.block_table:
                                 for item in self.block_table.get_children():
                                     values = self.block_table.item(item, "values")
@@ -3435,7 +3218,6 @@ class DigitalRubleApp(tk.Tk):
                                         self._on_block_row_double_click(None)
                                         break
                         
-                        # Создаем невидимую область для клика
                         click_area = ledger_canvas.create_rectangle(
                             x0, y0, x1, y1, fill="", outline="", width=0
                         )
@@ -3444,7 +3226,6 @@ class DigitalRubleApp(tk.Tk):
                         ledger_canvas.tag_bind(click_area, "<Leave>", lambda e: ledger_canvas.delete("tooltip"))
                         
                         if prev_x is not None:
-                            # Улучшенная визуализация связи блоков
                             ledger_canvas.create_line(
                                 prev_x + 60, prev_y, x - 60, y_l, 
                                 arrow=tk.LAST, 
@@ -3452,7 +3233,6 @@ class DigitalRubleApp(tk.Tk):
                                 width=2,
                                 arrowshape=(8, 10, 3)
                             )
-                            # Показываем хеш связи
                             mid_x = (prev_x + 60 + x - 60) // 2
                             mid_y = (prev_y + y_l) // 2
                             prev_hash = row.get("previous_hash") if isinstance(row, dict) else (row["previous_hash"] if "previous_hash" in row.keys() else None)
@@ -3465,13 +3245,11 @@ class DigitalRubleApp(tk.Tk):
                             )
                         prev_x, prev_y = x, y_l
         except Exception as e:
-            # Обрабатываем ошибки при обновлении canvas
             import traceback
             print(f"Ошибка при обновлении canvas консенсуса: {e}")
             traceback.print_exc()
 
     def _refresh_online_combos(self) -> None:
-        """Обновить списки отправителя и получателя с учётом выбранного типа перевода."""
         if not self.sender_combo or not self.receiver_combo:
             return
         channel = self.channel_combo.get() if self.channel_combo else "C2C"
@@ -3486,7 +3264,6 @@ class DigitalRubleApp(tk.Tk):
             "G2C": ("GOVERNMENT", "INDIVIDUAL"),
         }
         sender_type, receiver_type = mapping.get(channel, ("INDIVIDUAL", "INDIVIDUAL"))
-        # Группируем отправителей по типам и сортируем по возрастанию ID
         sender_users = sorted(
             self.platform.list_users(sender_type),
             key=lambda x: x["id"]
@@ -3496,7 +3273,6 @@ class DigitalRubleApp(tk.Tk):
             for u in sender_users
         ]
         
-        # Группируем получателей по типам и сортируем по возрастанию ID
         receiver_users = sorted(
             self.platform.list_users(receiver_type),
             key=lambda x: x["id"]
@@ -3522,49 +3298,35 @@ class DigitalRubleApp(tk.Tk):
     def _on_channel_change(self, event=None) -> None:
         self._refresh_online_combos()
     def _ui_refresh_consensus(self) -> None:
-        """Обновить таблицу и перезапустить анимацию консенсуса/реестра."""
         self.refresh_all()
         self._start_consensus_animation()
     
     def _ui_simulate_cbr_failure(self) -> None:
-        """Имитирует отказ ЦБ, запускает процесс выборов временного лидера и автоматически восстанавливает ЦБ."""
         try:
-            # Имитируем отказ ЦБ
             self.platform.consensus.simulate_cbr_failure()
             
-            # Запускаем процесс выборов для банков
-            # Создаем фиктивный блок для запуска процесса консенсуса
             from datetime import datetime, timezone
             fake_block_hash = f"failure-sim-{datetime.now(timezone.utc).isoformat()}"
             
-            # Для каждого банка запускаем процесс выборов
             banks = self.platform.list_banks()
             for bank in banks:
                 bank_id = bank["id"]
                 try:
                     from database import DatabaseManager
                     bank_db = DatabaseManager(f"bank_{bank_id}.db")
-                    # Создаем консенсус для банка
                     from consensus import RaftConsensus
                     bank_consensus = RaftConsensus(bank_db, node_id=f"BANK_{bank_id}")
                     bank_consensus.simulate_cbr_failure()
                     
-                    # ВАЖНО: Только банки (ФО) могут инициировать выборы временного лидера
-                    # ЦБ НЕ должен участвовать в выборах
                     if not bank_consensus.is_central_bank:
-                        # Запускаем раунд консенсуса для банка (это инициирует выборы)
                         bank_consensus.run_round(fake_block_hash)
                 except Exception as e:
                     import logging
                     logging.warning(f"Ошибка при имитации отказа для банка {bank_id}: {e}")
             
-            # Обновляем визуализацию
             self.refresh_all()
             self._start_consensus_animation()
             
-            # Логи доступны только через экспорт
-            
-            # Автоматическое восстановление через 5 секунд
             self.after(5000, self._auto_recover_cbr)
             
             messagebox.showinfo(
@@ -3578,12 +3340,10 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showerror("Ошибка", f"Не удалось имитировать отказ ЦБ: {exc}")
     
     def _auto_recover_cbr(self) -> None:
-        """Автоматически восстанавливает ЦБ после отказа."""
         try:
-            # Восстанавливаем ЦБ
+
             self.platform.consensus.simulate_cbr_recovery()
             
-            # Обновляем состояние банков
             banks = self.platform.list_banks()
             for bank in banks:
                 bank_id = bank["id"]
@@ -3597,23 +3357,16 @@ class DigitalRubleApp(tk.Tk):
                     import logging
                     logging.warning(f"Ошибка при восстановлении для банка {bank_id}: {e}")
             
-            # Обновляем визуализацию
             self.refresh_all()
             self._start_consensus_animation()
-            
-            # Логи будут доступны для экспорта
         except Exception as exc:
             import logging
             logging.error(f"Ошибка при автоматическом восстановлении ЦБ: {exc}")
     
     def _ui_export_failure_recovery_log(self) -> None:
-        """Экспортирует детальные логи всех процессов от отказа до восстановления в файл."""
         try:
-            
-            # Получаем логи от ЦБ
             cbr_log = self.platform.consensus.get_failure_recovery_log()
             
-            # Получаем логи от всех банков
             all_logs = []
             banks = self.platform.list_banks()
             for bank in banks:
@@ -3628,13 +3381,10 @@ class DigitalRubleApp(tk.Tk):
                 except Exception:
                     pass
             
-            # Объединяем логи
             all_logs.extend(cbr_log)
             
-            # Сортируем по времени
             all_logs.sort(key=lambda x: x.get("timestamp", ""))
             
-            # Формируем детальный вывод
             output_lines = []
             output_lines.append("=" * 100)
             output_lines.append("ДЕТАЛЬНЫЕ ЛОГИ ПРОЦЕССОВ: ОТКАЗ ЦБ → ВОССТАНОВЛЕНИЕ")
@@ -3645,7 +3395,6 @@ class DigitalRubleApp(tk.Tk):
                 output_lines.append("Логи процессов пока отсутствуют.")
                 output_lines.append("Используйте кнопку 'Имитировать отказ ЦБ' для генерации логов.")
             else:
-                # Группируем логи по этапам
                 failure_events = []
                 election_events = []
                 recovery_events = []
@@ -3661,11 +3410,9 @@ class DigitalRubleApp(tk.Tk):
                     elif "ВОССТАНОВЛ" in event or "RECOVERED" in state or "TRANSFERRED" in state:
                         recovery_events.append(log_entry)
                 
-                # Этап 1: Отказ ЦБ
                 output_lines.append("ЭТАП 1: ОТКАЗ ЦЕНТРАЛЬНОГО БАНКА")
                 output_lines.append("-" * 100)
                 if failure_events:
-                    # Показываем только уникальные события отказа (чтобы избежать дубликатов)
                     seen_failures = set()
                     for event in failure_events:
                         event_key = f"{event.get('actor')}_{event.get('state')}"
@@ -3680,7 +3427,6 @@ class DigitalRubleApp(tk.Tk):
                     output_lines.append("  События отказа ЦБ отсутствуют.")
                 output_lines.append("")
                 
-                # Этап 2: Детектирование отказа банками
                 output_lines.append("ЭТАП 2: ДЕТЕКТИРОВАНИЕ ОТКАЗА БАНКАМИ")
                 output_lines.append("-" * 100)
                 output_lines.append("  Банки обнаруживают отсутствие heartbeat от ЦБ")
@@ -3688,7 +3434,6 @@ class DigitalRubleApp(tk.Tk):
                 output_lines.append("  Банки инициируют процесс выборов временного лидера")
                 output_lines.append("")
                 
-                # Этап 3: Выборы временного лидера
                 output_lines.append("ЭТАП 3: ВЫБОРЫ ВРЕМЕННОГО ЛИДЕРА СРЕДИ ФО (НЕ ЦБ)")
                 output_lines.append("-" * 100)
                 output_lines.append("  После отказа ЦБ новый лидер выбирается среди Финансовых Организаций (ФО)")
@@ -3696,7 +3441,6 @@ class DigitalRubleApp(tk.Tk):
                 output_lines.append("  Процесс голосования за принятие нового лидера (кворум)")
                 output_lines.append("")
                 if election_events:
-                    # Группируем по термам
                     terms = {}
                     other_events = []
                     
@@ -3704,7 +3448,6 @@ class DigitalRubleApp(tk.Tk):
                         event_text = event.get("event", "")
                         if "term-" in event_text:
                             try:
-                                # Извлекаем терм из текста события
                                 parts = event_text.split("term-")
                                 if len(parts) > 1:
                                     term_part = parts[1].split()[0] if parts[1] else "0"
@@ -3718,11 +3461,9 @@ class DigitalRubleApp(tk.Tk):
                         else:
                             other_events.append(event)
                     
-                    # Выводим события по термам с детализацией голосования
                     for term, events in sorted(terms.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
                         output_lines.append(f"  ТЕРМ {term}:")
                         
-                        # Находим кандидата и процесс голосования
                         candidate = None
                         votes = []
                         leader_elected = None
@@ -3736,27 +3477,21 @@ class DigitalRubleApp(tk.Tk):
                             if "CANDIDATE_ANALYSIS" in state or "Анализ кандидатов" in event_text:
                                 candidate_analysis = event_text
                             elif "ELECTION_START" in state or "становится кандидатом" in event_text:
-                                # Проверяем, что кандидат - это ФО, а не ЦБ
                                 if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
                                     candidate = actor
                             elif "VOTE_GRANTED" in state or "Голос получен" in event_text:
-                                # Проверяем, что голосующий - это ФО, а не ЦБ
                                 if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
                                     votes.append(actor)
                             elif "LEADER_ELECTED" in state or "избран временным лидером" in event_text:
-                                # Проверяем, что избранный - это ФО, а не ЦБ
                                 if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
                                     leader_elected = actor
                         
-                        # Показываем процесс выборов
                         if candidate:
-                            # Находим информацию о log_index кандидата
                             candidate_log_index = None
                             for event in events:
                                 event_text = event.get("event", "")
                                 if "log_index" in event_text and candidate in event_text:
                                     try:
-                                        # Извлекаем log_index из текста
                                         if "log_index=" in event_text:
                                             idx_part = event_text.split("log_index=")[1].split()[0].rstrip(")")
                                             candidate_log_index = idx_part
@@ -3766,7 +3501,6 @@ class DigitalRubleApp(tk.Tk):
                                     except:
                                         pass
                             
-                            # Проверяем, что кандидат - это ФО, а не ЦБ
                             if "CBR" in candidate.upper() or "ЦБ" in candidate.upper():
                                 output_lines.append(f"    ОШИБКА: ЦБ не может быть кандидатом на роль временного лидера!")
                                 output_lines.append(f"    Выборы должны проводиться только среди ФО (Финансовых Организаций)")
@@ -3776,7 +3510,6 @@ class DigitalRubleApp(tk.Tk):
                             output_lines.append(f"    ВАЖНО: Выборы проводятся ТОЛЬКО среди ФО, ЦБ не участвует в выборах")
                             output_lines.append(f"    ПРОЦЕСС ГОЛОСОВАНИЯ ЗА ПРИНЯТИЕ НОВОГО ЛИДЕРА (КВОРУМ):")
                             
-                            # Находим информацию о кворуме
                             nodes_count = len([e for e in events if "BANK" in e.get("actor", "") or "CBR" not in e.get("actor", "")])
                             majority_needed = (nodes_count // 2) + 1 if nodes_count > 0 else 1
                             
@@ -3789,7 +3522,6 @@ class DigitalRubleApp(tk.Tk):
                                 output_lines.append(f"      Необходимо голосов для кворума: {majority_needed}")
                             
                             if leader_elected:
-                                # Проверяем, что избранный лидер - это ФО, а не ЦБ
                                 if "CBR" in leader_elected.upper() or "ЦБ" in leader_elected.upper():
                                     output_lines.append(f"    ОШИБКА: ЦБ не может быть избран временным лидером!")
                                     output_lines.append(f"    Временным лидером может быть только ФО (Финансовая Организация)")
@@ -3801,12 +3533,8 @@ class DigitalRubleApp(tk.Tk):
                                     output_lines.append(f"    ВАЖНО: Временный лидер - это ФО, а не ЦБ")
                             output_lines.append("")
                         
-                        # НЕ показываем все события терма здесь - они будут в хронологии
-                        # Это предотвращает дублирование строк
                         output_lines.append("")
                     
-                    # НЕ показываем остальные события выборов здесь - они будут в хронологии
-                    # Это предотвращает дублирование строк
                     if other_events:
                         output_lines.append("  (Детальные события выборов см. в хронологии ниже)")
                         output_lines.append("")
@@ -3815,21 +3543,18 @@ class DigitalRubleApp(tk.Tk):
                     output_lines.append("  Примечание: Выборы будут инициированы при следующем создании блока.")
                 output_lines.append("")
                 
-                # Этап 4: Работа временного лидера (ФО выполняет роль ЦБ)
                 output_lines.append("ЭТАП 4: РАБОТА ВРЕМЕННОГО ЛИДЕРА (ФО ВЫПОЛНЯЕТ РОЛЬ ЦБ)")
                 output_lines.append("-" * 100)
                 output_lines.append("  ВАЖНО: Временный лидер только формирует блоки, НЕ выполняет репликацию")
                 output_lines.append("  Сформированные блоки хранятся до восстановления ЦБ")
                 output_lines.append("")
                 
-                # Ищем события работы временного лидера
                 leader_work_events = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
                     state = log_entry.get("state", "").upper()
                     actor = log_entry.get("actor", "")
                     
-                    # События работы временного лидера (но не ЦБ)
                     if (("ЛИДЕР" in event or "LEADER" in state) and 
                         "BANK" in actor.upper() and 
                         "ВРЕМЕННЫЙ" not in event and "ВЫБОРЫ" not in event):
@@ -3845,7 +3570,6 @@ class DigitalRubleApp(tk.Tk):
                     output_lines.append("  Временный лидер (ФО) формирует блоки:")
                     output_lines.append("")
                     
-                    # Группируем события по типам
                     block_creation = []
                     block_storage = []
                     
@@ -3858,10 +3582,8 @@ class DigitalRubleApp(tk.Tk):
                         elif "BLOCK_STORED" in state or "сохраняет" in event_text:
                             block_storage.append(event)
                     
-                    # Показываем формирование блоков (только краткую информацию)
                     if block_creation:
                         output_lines.append("  ФОРМИРОВАНИЕ БЛОКОВ:")
-                        # Подсчитываем количество блоков
                         unique_blocks = set()
                         for event in block_creation:
                             block_hash = event.get("block_hash", "")
@@ -3871,7 +3593,6 @@ class DigitalRubleApp(tk.Tk):
                         output_lines.append(f"    • (Детальные события формирования блоков см. в хронологии ниже)")
                         output_lines.append("")
                     
-                    # Показываем сохранение блоков (только краткую информацию)
                     if block_storage:
                         output_lines.append("  СОХРАНЕНИЕ БЛОКОВ (до восстановления ЦБ):")
                         output_lines.append(f"    • Блоки сохранены локально до восстановления ЦБ")
@@ -3884,9 +3605,8 @@ class DigitalRubleApp(tk.Tk):
                 else:
                     output_lines.append("  Временный лидер формирует блоки и сохраняет их до восстановления ЦБ")
                     output_lines.append("  Репликация не выполняется")
-                output_lines.append("")
+                    output_lines.append("")
                 
-                # Этап 5: Восстановление ЦБ
                 output_lines.append("ЭТАП 5: ВОССТАНОВЛЕНИЕ ЦЕНТРАЛЬНОГО БАНКА")
                 output_lines.append("-" * 100)
                 if recovery_events:
@@ -3900,11 +3620,9 @@ class DigitalRubleApp(tk.Tk):
                     output_lines.append("  События восстановления отсутствуют.")
                 output_lines.append("")
                 
-                # Этап 6: Передача управления и данных обратно ЦБ
                 output_lines.append("ЭТАП 6: ПЕРЕДАЧА УПРАВЛЕНИЯ И ДАННЫХ ОБРАТНО ЦБ")
                 output_lines.append("-" * 100)
                 
-                # Ищем события передачи управления
                 transfer_events = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -3925,7 +3643,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("  3. ФО ПЕРЕДАЕТ СФОРМИРОВАННЫЕ БЛОКИ В ЦБ:")
                 
-                # Ищем события передачи блоков от ФО
                 blocks_transfer = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -3942,7 +3659,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("  3. ФО ПЕРЕДАЕТ СФОРМИРОВАННЫЕ БЛОКИ В ЦБ:")
                 
-                # Ищем события передачи блоков от ФО
                 blocks_transfer = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -3962,7 +3678,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("  4. ЦБ ПРИНИМАЕТ БЛОКИ ОТ ВРЕМЕННОГО ЛИДЕРА:")
                 
-                # Ищем события приема блоков
                 blocks_reception = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -3983,7 +3698,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("  5. ЦБ ПРОИЗВОДИТ РЕПЛИКАЦИЮ ПРИНЯТЫХ БЛОКОВ:")
                 
-                # Ищем события репликации от ЦБ
                 cbr_replication = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -4004,7 +3718,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("  6. ЦБ ВОЗВРАЩАЕТСЯ В ШТАТНЫЙ РЕЖИМ РАБОТЫ:")
                 
-                # Ищем события возврата в штатный режим
                 normal_operation = []
                 for log_entry in all_logs:
                     event = log_entry.get("event", "").upper()
@@ -4024,9 +3737,7 @@ class DigitalRubleApp(tk.Tk):
                     output_lines.append("     • ЦБ продолжает обработку транзакций и формирование блоков")
                 output_lines.append("")
                 
-                # Показываем информацию о синхронизированных блоках
                 try:
-                    # Получаем информацию о блоках, созданных временным лидером
                     from database import DatabaseManager
                     cbr_db = self.platform.db
                     temp_leader_blocks = cbr_db.execute(
@@ -4052,7 +3763,6 @@ class DigitalRubleApp(tk.Tk):
                 
                 output_lines.append("")
                 
-                # Все события в хронологическом порядке
                 output_lines.append("=" * 100)
                 output_lines.append("ХРОНОЛОГИЯ ВСЕХ СОБЫТИЙ")
                 output_lines.append("=" * 100)
@@ -4069,7 +3779,6 @@ class DigitalRubleApp(tk.Tk):
             output_lines.append("КОНЕЦ ЛОГОВ")
             output_lines.append("=" * 100)
             
-            # Экспортируем в файл
             from datetime import datetime, timezone
             filename = f"cbr_failure_recovery_log_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
             
@@ -4088,22 +3797,18 @@ class DigitalRubleApp(tk.Tk):
                     "Экспорт логов",
                     f"Логи успешно экспортированы в файл:\n{filepath}"
                 )
-            # Если пользователь отменил, просто не сохраняем файл
             
         except Exception as exc:
             messagebox.showerror("Ошибка", f"Не удалось экспортировать логи: {exc}")
 
     def _start_consensus_animation(self) -> None:
-        """Запуск анимации по последнему раунду консенсуса."""
         if self._consensus_anim_job is not None:
             self.after_cancel(self._consensus_anim_job)
             self._consensus_anim_job = None
         stats = self.platform.consensus.stats()
         last_block = stats.get("last_block")
         
-        # Если нет последнего блока, пытаемся получить последние события из всех блоков
         if not last_block or last_block == "-":
-            # Получаем последние события консенсуса (для случаев после отказа ЦБ)
             rows = self.platform.db.execute(
                 """
                 SELECT block_hash, event, actor, state, created_at
@@ -4114,7 +3819,6 @@ class DigitalRubleApp(tk.Tk):
                 fetchall=True,
             )
             if rows:
-                # Используем последний блок из событий
                 last_block = rows[-1]["block_hash"]
                 self._consensus_anim_events = [dict(r) for r in reversed(rows)]
             else:
@@ -4130,7 +3834,6 @@ class DigitalRubleApp(tk.Tk):
                 (last_block,),
                 fetchall=True,
             )
-            # Включаем все события, включая выборы
             self._consensus_anim_events = [dict(r) for r in rows] if rows else []
         
         self._consensus_anim_index = 0
@@ -4150,7 +3853,6 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_anim_job = None
             return
         
-        # Если нет событий, просто обновляем canvas без анимации
         if not self._consensus_anim_events:
             self._consensus_active_actor = None
             self._consensus_active_state = None
@@ -4159,8 +3861,6 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_votes = 0
             self._consensus_replications = 0
             nodes = self.platform.consensus.get_nodes()
-            # ВАЖНО: При подсчете кворума ЦБ не учитывается
-            # Считаем только банки (ФО)
             bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
             self._consensus_total_banks = max(len(bank_nodes), 1)
             self._refresh_consensus_canvas()
@@ -4172,67 +3872,46 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_active_state = event["state"]
         self._consensus_active_event = event["event"]
         
-        # Определяем активные узлы на текущем этапе
         self._consensus_active_nodes = set()
         
-        # ЭТАП ГОЛОСОВАНИЯ ЗА ПРИНЯТИЕ БЛОКА: ЦБ запрашивает голоса у всех узлов
         if event["state"] in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-            # Активны лидер (ЦБ) и все голосующие узлы
             if event["actor"] != self.platform.consensus.node_id:
                 self._consensus_active_nodes.add(event["actor"])
-            # ВАЖНО: Все банки должны участвовать в голосовании за принятие блока
-            # Добавляем все банки в активные узлы для визуализации
             nodes = self.platform.consensus.get_nodes()
             for node in nodes:
                 if "BANK" in node.upper() and node != self.platform.consensus.node_id:
                     self._consensus_active_nodes.add(node)
-        # ЭТАП ВЫБОРОВ ВРЕМЕННОГО ЛИДЕРА: активны кандидат и ВСЕ голосующие (все ФО участвуют)
         elif event["state"] in {"ELECTION_START", "CANDIDATE"}:
-            # Кандидат активен
             if event["actor"] != self.platform.consensus.node_id:
                 self._consensus_active_nodes.add(event["actor"])
-            # ВАЖНО: Все банки должны участвовать в голосовании
-            # Добавляем все банки в активные узлы для визуализации
             nodes = self.platform.consensus.get_nodes()
             for node in nodes:
                 if "BANK" in node.upper() and node != self.platform.consensus.node_id:
                     self._consensus_active_nodes.add(node)
         elif event["state"] in {"VOTE_GRANTED", "VOTE_DENIED"}:
-            # Проверяем, это голосование за принятие блока или выборы лидера
-            # Если это не ELECTION_START/CANDIDATE, то это голосование за принятие блока
             is_election = any(e["state"] in {"ELECTION_START", "CANDIDATE"} 
                             for e in self._consensus_anim_events[:self._consensus_anim_index])
             if not is_election:
-                # Это голосование за принятие блока
                 if event["actor"] != self.platform.consensus.node_id:
                     self._consensus_active_nodes.add(event["actor"])
-                # ВАЖНО: Все банки должны участвовать в голосовании за принятие блока
                 nodes = self.platform.consensus.get_nodes()
                 for node in nodes:
                     if "BANK" in node.upper() and node != self.platform.consensus.node_id:
                         self._consensus_active_nodes.add(node)
-            # Кандидат активен
             if event["actor"] != self.platform.consensus.node_id:
                 self._consensus_active_nodes.add(event["actor"])
-            # ВАЖНО: Все банки должны участвовать в голосовании
-            # Добавляем все банки в активные узлы для визуализации
             nodes = self.platform.consensus.get_nodes()
             for node in nodes:
                 if "BANK" in node.upper() and node != self.platform.consensus.node_id:
                     self._consensus_active_nodes.add(node)
-        # ЭТАП РЕПЛИКАЦИИ: активен лидер и ВСЕ получатели (все ФО участвуют)
         elif event["state"] in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND"}:
-            # На этапах репликации активен конкретный узел-получатель
             if event["actor"] != self.platform.consensus.node_id:
                 self._consensus_active_nodes.add(event["actor"])
-            # ВАЖНО: Все банки должны участвовать в репликации
-            # Добавляем все банки в активные узлы для визуализации
             nodes = self.platform.consensus.get_nodes()
             for node in nodes:
                 if "BANK" in node.upper() and node != self.platform.consensus.node_id:
                     self._consensus_active_nodes.add(node)
         elif event["state"] == "COMMITTED":
-            # На этапе фиксации активны все узлы
             nodes = self.platform.consensus.get_nodes()
             self._consensus_active_nodes = set(nodes[1:])  # Все банки кроме лидера
         
@@ -4243,27 +3922,21 @@ class DigitalRubleApp(tk.Tk):
             self._ledger_active_height = None
         seen = self._consensus_anim_events[: self._consensus_anim_index + 1]
         nodes = self.platform.consensus.get_nodes()
-        # ВАЖНО: При подсчете кворума ЦБ не учитывается
-        # Считаем только банки (ФО)
         bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
         cbr_nodes = [n for n in nodes if "CBR" in n.upper() or (hasattr(self.platform.consensus, 'is_central_bank') and self.platform.consensus.is_central_bank)]
         
-        # Подсчитываем голоса за принятие блока и выборы временного лидера
-        # ВАЖНО: При подсчете голосов за принятие блока учитываем только голоса от ФО (не ЦБ)
         vote_events = [e for e in seen if e["state"] in {"VOTE_GRANTED", "QUORUM_REACHED"}]
-        # Фильтруем голоса: исключаем голос ЦБ
         self._consensus_votes = sum(1 for e in vote_events 
                                     if e.get("actor") not in cbr_nodes and 
                                     (e.get("actor") in bank_nodes or "BANK" in str(e.get("actor", "")).upper()))
         
-        # Подсчитываем подтверждения репликации
         self._consensus_replications = sum(1 for e in seen if e["state"] in {"REPLICATION", "COMMITTED"})
         self._consensus_total_banks = max(len(bank_nodes), 1)
         self._refresh_consensus_canvas()
         self._consensus_anim_index = (self._consensus_anim_index + 1) % len(
             self._consensus_anim_events
         )
-        self._consensus_anim_job = self.after(1000, self._run_consensus_animation_step)  # Увеличил время для лучшей видимости
+        self._consensus_anim_job = self.after(1000, self._run_consensus_animation_step)
 
     def _selected_id(self, value: str) -> int:
         if not value:
@@ -4275,7 +3948,6 @@ class DigitalRubleApp(tk.Tk):
             user_id = self._selected_id(self.wallet_user_combo.get())
             user = self.platform.get_user(user_id)
 
-            # Проверяем соответствие выбранного банка банку пользователя
             selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
             if selected_bank_text:
                 selected_bank_id = self._selected_id(selected_bank_text)
@@ -4287,7 +3959,6 @@ class DigitalRubleApp(tk.Tk):
                     )
                     return
             else:
-                # Если банк не выбран, подставляем банк пользователя
                 self._on_wallet_user_change()
 
             already_open = user["wallet_status"] == "OPEN"
@@ -4305,7 +3976,6 @@ class DigitalRubleApp(tk.Tk):
             user_id = self._selected_id(self.wallet_user_combo.get())
             user = self.platform.get_user(user_id)
 
-            # Проверяем соответствие выбранного банка банку пользователя
             selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
             if selected_bank_text:
                 selected_bank_id = self._selected_id(selected_bank_text)
@@ -4317,7 +3987,6 @@ class DigitalRubleApp(tk.Tk):
                     )
                     return
             else:
-                # Если банк не выбран, подставляем банк пользователя
                 self._on_wallet_user_change()
 
             amount = float(self.convert_amount.get())
@@ -4449,7 +4118,6 @@ class DigitalRubleApp(tk.Tk):
         )
 
     def _refresh_bank_data(self) -> None:
-        """Обновляет данные, хращиеся в финансовой организации"""
         if not self.bank_tx_table:
             return
         
@@ -4461,7 +4129,6 @@ class DigitalRubleApp(tk.Tk):
             bank_id = self._selected_id(selected_bank)
         
         if not bank_id:
-            # Если банк не выбран, показываем сообщение
             self.bank_tx_table.insert(
                 "",
                 tk.END,
@@ -4475,7 +4142,6 @@ class DigitalRubleApp(tk.Tk):
             return
         
         try:
-            # Получаем всех клиентов банка
             users = self.platform.list_users()
             bank_users = [u for u in users if u.get("bank_id") == bank_id]
             
@@ -4492,28 +4158,21 @@ class DigitalRubleApp(tk.Tk):
                 )
                 return
             
-            # Получаем все транзакции из БД ЦБ (там хранятся все транзакции)
-            # Фильтруем по bank_id транзакции
             all_transactions = self.platform.get_transactions(bank_id=bank_id)
             
-            # Группируем транзакции по клиентам и считаем статистику
             for user in bank_users:
                 user_id = user["id"]
                 user_name = user["name"]
                 user_type = self._user_type_label(user["user_type"])
                 
-                # Транзакции, где пользователь был отправителем или получателем
-                # ВАЖНО: Ищем транзакции где пользователь участвует (отправитель ИЛИ получатель)
                 user_txs = [
                     tx for tx in all_transactions 
                     if (tx.get("sender_id") == user_id or tx.get("receiver_id") == user_id)
                 ]
                 
-                # Дополнительно проверяем транзакции в БД банка (реплицированные)
                 try:
                     from database import DatabaseManager
                     bank_db = DatabaseManager(f"bank_{bank_id}.db")
-                    # Получаем транзакции из БД банка, где пользователь участвует
                     bank_tx_rows = bank_db.execute(
                         """
                         SELECT DISTINCT t.id 
@@ -4523,11 +4182,9 @@ class DigitalRubleApp(tk.Tk):
                         (user_id, user_id),
                         fetchall=True
                     )
-                    # Добавляем транзакции, которых нет в основном списке
                     existing_tx_ids = {tx.get("id") for tx in user_txs}
                     for row in bank_tx_rows:
                         if row["id"] not in existing_tx_ids:
-                            # Получаем полную информацию о транзакции из БД банка
                             tx_row = bank_db.execute(
                                 "SELECT * FROM transactions WHERE id = ?",
                                 (row["id"],),
@@ -4536,18 +4193,15 @@ class DigitalRubleApp(tk.Tk):
                             if tx_row:
                                 user_txs.append(dict(tx_row))
                 except Exception as e:
-                    # Если не удалось получить данные из БД банка, используем только основной список
                     pass
                 
                 tx_count = len(user_txs)
                 
-                # Подсчитываем типы транзакций
                 tx_types = {}
                 for tx in user_txs:
                     tx_type = tx.get("tx_type", "UNKNOWN")
                     tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
                 
-                # Определяем преобладающий тип
                 if tx_types:
                     predominant_type = max(tx_types.items(), key=lambda x: x[1])[0]
                     predominant_label = {
@@ -4586,12 +4240,10 @@ class DigitalRubleApp(tk.Tk):
             )
     
     def _refresh_bank_data_and_blocks(self) -> None:
-        """Обновляет данные ФО и блоки"""
         self._refresh_bank_data()
         self._refresh_bank_blocks()
     
     def _refresh_bank_blocks(self) -> None:
-        """Обновляет таблицу блоков распределенного реестра для вкладки ФО"""
         if not self.bank_blocks_table:
             return
         
@@ -4609,13 +4261,11 @@ class DigitalRubleApp(tk.Tk):
             from database import DatabaseManager
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
             
-            # Получаем все блоки из БД банка (они реплицированы с ЦБ)
             rows = bank_db.execute(
                 "SELECT * FROM blocks ORDER BY height ASC", fetchall=True
             )
             
             for row in rows:
-                # Проверяем количество транзакций в блоке
                 tx_count_row = bank_db.execute(
                     """
                     SELECT COUNT(*) as count FROM block_transactions bt 
@@ -4627,7 +4277,6 @@ class DigitalRubleApp(tk.Tk):
                 )
                 tx_count = tx_count_row["count"] if tx_count_row else 0
                 
-                # Статус репликации: если блок есть в БД банка, значит он реплицирован
                 replication_status = "Реплицирован"
                 
                 self.bank_blocks_table.insert(
@@ -4647,7 +4296,6 @@ class DigitalRubleApp(tk.Tk):
             traceback.print_exc()
     
     def _on_bank_client_row_double_click(self, event) -> None:
-        """Обработчик двойного клика по строке клиента - открывает экспорт транзакций"""
         selection = self.bank_tx_table.selection()
         if not selection:
             return
@@ -4661,7 +4309,6 @@ class DigitalRubleApp(tk.Tk):
         if client_name == "-" or client_name == "Ошибка":
             return
         
-        # Находим ID клиента по имени
         selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
         bank_id = None
         if selected_bank:
@@ -4683,11 +4330,9 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showwarning("Экспорт", f"Клиент {client_name} не найден")
             return
         
-        # Вызываем экспорт транзакций
         self._ui_export_client_transactions(client_user["id"])
     
     def _ui_export_client_transactions(self, client_id: int = None) -> None:
-        """Экспорт полного лога всех транзакций клиента"""
         selected_bank = self.bank_filter_combo.get() if self.bank_filter_combo else None
         bank_id = None
         if selected_bank:
@@ -4697,7 +4342,6 @@ class DigitalRubleApp(tk.Tk):
             messagebox.showwarning("Экспорт", "Выберите финансовую организацию")
             return
         
-        # Если client_id не передан, пытаемся получить из выбранной строки
         if client_id is None:
             selection = self.bank_tx_table.selection()
             if selection:
@@ -4719,19 +4363,15 @@ class DigitalRubleApp(tk.Tk):
         try:
             client = self.platform.get_user(client_id)
             
-            # Получаем все транзакции клиента
             all_transactions = self.platform.get_transactions(bank_id=bank_id)
             client_transactions = [
                 tx for tx in all_transactions 
                 if tx.get("sender_id") == client_id or tx.get("receiver_id") == client_id
             ]
             
-            # Дополнительно проверяем транзакции в БД банка (реплицированные)
-            # Это необходимо, так как во вкладке ФО показываются все транзакции из БД банка
             try:
                 from database import DatabaseManager
                 bank_db = DatabaseManager(f"bank_{bank_id}.db")
-                # Получаем транзакции из БД банка, где пользователь участвует
                 bank_tx_rows = bank_db.execute(
                     """
                     SELECT DISTINCT t.id 
@@ -4741,11 +4381,9 @@ class DigitalRubleApp(tk.Tk):
                     (client_id, client_id),
                     fetchall=True
                 )
-                # Добавляем транзакции, которых нет в основном списке
                 existing_tx_ids = {tx.get("id") for tx in client_transactions}
                 for row in bank_tx_rows:
                     if row["id"] not in existing_tx_ids:
-                        # Получаем полную информацию о транзакции из БД банка
                         tx_row = bank_db.execute(
                             "SELECT * FROM transactions WHERE id = ?",
                             (row["id"],),
@@ -4754,14 +4392,12 @@ class DigitalRubleApp(tk.Tk):
                         if tx_row:
                             client_transactions.append(dict(tx_row))
             except Exception as e:
-                # Если не удалось получить данные из БД банка, используем только основной список
                 pass
             
             if not client_transactions:
                 messagebox.showinfo("Экспорт", f"У клиента {client['name']} нет транзакций")
                 return
             
-            # Запрашиваем путь для сохранения
             from datetime import datetime
             default_filename = f"transactions_{client['name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             file_path = filedialog.asksaveasfilename(
@@ -4774,8 +4410,6 @@ class DigitalRubleApp(tk.Tk):
             if not file_path:
                 return
             
-            # Формируем полный лог транзакций
-            # Безопасно получаем название банка
             try:
                 bank_obj = self.platform._get_bank(bank_id)
                 bank_name = bank_obj["name"]
@@ -4800,7 +4434,6 @@ class DigitalRubleApp(tk.Tk):
                     f.write(f"ID транзакции: {tx['id']}\n")
                     f.write(f"Хеш транзакции: {tx.get('hash', 'N/A')}\n")
                     
-                    # Определяем роль клиента
                     if tx.get("sender_id") == client_id:
                         role = "Отправитель"
                         try:
@@ -4827,7 +4460,6 @@ class DigitalRubleApp(tk.Tk):
                     if tx.get("notes"):
                         f.write(f"Примечание: {tx['notes']}\n")
                     
-                    # Метаданные
                     f.write(f"\nМетаданные:\n")
                     f.write(f"  - Банк: {self.platform._get_bank(tx.get('bank_id', bank_id))['name']}\n")
                     if tx.get("offline_flag"):
