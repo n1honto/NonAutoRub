@@ -29,6 +29,9 @@ try:
 except ImportError:
     BATCH_PROCESSING_AVAILABLE = False
 
+# Константа для количества банков по умолчанию
+DEFAULT_BANK_COUNT = 4
+
 logging.basicConfig(
     filename="digital_ruble.log",
     level=logging.INFO,
@@ -155,7 +158,7 @@ class DigitalRublePlatform:
     def __init__(self, node_id: str = "CBR_0", db_path: str = "digital_ruble.db") -> None:
         self.db = DatabaseManager(db_path)
         self.ledger = DistributedLedger(self.db)
-        self.consensus = MasterchainConsensus(self.db)
+        self.consensus = MasterchainConsensus(self.db, node_id=node_id)
         self.metrics = MetricsCollector(self.db)
         self.node_id = node_id
         self._cleanup_transient()
@@ -164,7 +167,13 @@ class DigitalRublePlatform:
         self._offline_tx_counter: int = 0
         self._offline_sync_counter: int = 0
         
-        # Инициализация распределенной сети
+        # Инициализация распределенной сети (до инициализации банков)
+        # Инициализируем _distributed_enabled заранее
+        self._distributed_enabled = False
+        self.node_manager = None
+        self.p2p_network = None
+        self.fork_resolver = None
+        
         try:
             from node_manager import NodeManager
             from p2p_network import P2PNetwork
@@ -184,11 +193,18 @@ class DigitalRublePlatform:
             )
             
             self._distributed_enabled = True
-        except ImportError:
+        except (ImportError, Exception):
+            # В случае любой ошибки оставляем _distributed_enabled = False
             self._distributed_enabled = False
-            self.node_manager = None
-            self.p2p_network = None
-            self.fork_resolver = None
+            if not hasattr(self, 'node_manager'):
+                self.node_manager = None
+            if not hasattr(self, 'p2p_network'):
+                self.p2p_network = None
+            if not hasattr(self, 'fork_resolver'):
+                self.fork_resolver = None
+        
+        # Инициализация банков по умолчанию (после инициализации распределенной сети)
+        self._initialize_default_banks()
         
         # Инициализация батч-обработки и детального логирования
         if BATCH_PROCESSING_AVAILABLE:
@@ -240,6 +256,79 @@ class DigitalRublePlatform:
             except Exception:
                 pass
 
+    def _initialize_default_banks(self) -> None:
+        """
+        Инициализирует банки по умолчанию, если их еще нет.
+        Банки создаются только один раз при первом запуске.
+        """
+        existing_banks = self.list_banks()
+        
+        # Если банки уже существуют, ничего не делаем
+        if len(existing_banks) >= DEFAULT_BANK_COUNT:
+            return
+        
+        # Создаем недостающие банки до DEFAULT_BANK_COUNT штук
+        banks_to_create = DEFAULT_BANK_COUNT - len(existing_banks)
+        
+        for idx in range(banks_to_create):
+            bank_number = len(existing_banks) + idx + 1
+            name = f"Финансовая организация {bank_number}"
+            
+            # Проверяем, не существует ли уже банк с таким именем
+            existing = self.db.execute(
+                "SELECT id FROM banks WHERE name = ?",
+                (name,),
+                fetchone=True
+            )
+            
+            if existing:
+                continue  # Банк уже существует, пропускаем
+            
+            # Создаем банк в центральной БД
+            self.db.execute(
+                "INSERT INTO banks(name) VALUES(?)",
+                (name,),
+            )
+            
+            # Получаем ID созданного банка
+            row = self.db.execute(
+                "SELECT id FROM banks WHERE name = ?",
+                (name,),
+                fetchone=True
+            )
+            
+            if not row:
+                continue  # Не удалось создать банк
+            
+            bank_id = row["id"]
+            
+            # Создаем БД для банка
+            from database import DatabaseManager
+            db_path = f"bank_{bank_id}.db"
+            DatabaseManager(db_path)
+            
+            # Регистрируем узел в распределенной сети
+            if self._distributed_enabled and self.node_manager:
+                node_id = f"BANK_{bank_id}"
+                self.node_manager.register_node(
+                    node_id=node_id,
+                    name=name,
+                    node_type="BANK",
+                    db_path=db_path,
+                    address=f"local://{db_path}"
+                )
+                # Регистрируем соединение с текущим узлом
+                self.node_manager.register_connection(self.node_id, node_id)
+                self.node_manager.register_connection(node_id, self.node_id)
+            
+            # Логируем создание банка
+            self._log_activity(
+                actor=name,
+                stage="Инициализация ФО",
+                details=f"Финансовая организация {name} инициализирована в системе",
+                context="Инициализация",
+            )
+
     def reset_state(self) -> None:
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
@@ -261,7 +350,8 @@ class DigitalRublePlatform:
             # Не удаляем users из ЦБ, т.к. их там больше нет
             # Пользователи удаляются вместе с БД банков
             self.db.execute("DELETE FROM wallets")
-            self.db.execute("DELETE FROM banks")
+            # НЕ удаляем банки - они являются фиксированной инфраструктурой
+            # self.db.execute("DELETE FROM banks")  # ЗАКОММЕНТИРОВАНО
             
             self.db.execute("DELETE FROM blocks WHERE height > 0")
             
@@ -275,191 +365,58 @@ class DigitalRublePlatform:
         finally:
             self.db.execute("PRAGMA foreign_keys = ON")
         
-        # Удаляем файлы БД банков
-        # В Windows файлы могут быть заблокированы открытыми соединениями
+        # НЕ удаляем файлы БД банков - они являются фиксированной инфраструктурой
+        # Вместо этого очищаем данные пользователей в БД банков
         from pathlib import Path
-        import time
-        import gc
-        import os
-        
-        # Список всех файлов bank_*.db
-        bank_db_files = list(Path(".").glob("bank_*.db"))
-        
-        if not bank_db_files:
-            return
-        
-        # Принудительно закрываем все соединения с БД банков
-        # Сначала пытаемся закрыть все известные соединения
-        try:
-            from database import DatabaseManager
-            # Пытаемся закрыть соединения для всех известных файлов
-            for path in bank_db_files:
+        banks = self.list_banks()
+        for bank in banks:
+            bank_id = bank["id"]
+            bank_db_path = f"bank_{bank_id}.db"
+            if Path(bank_db_path).exists():
                 try:
-                    # Пытаемся создать временное соединение и сразу закрыть его
-                    # Это может помочь освободить блокировку
-                    temp_db = DatabaseManager(str(path))
-                    if hasattr(temp_db, '_conn'):
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(bank_db_path)
+                    # Очищаем данные пользователей, но сохраняем структуру БД
+                    bank_db.execute("PRAGMA foreign_keys = OFF")
+                    try:
+                        bank_db.execute("DELETE FROM government_institutions")
+                        bank_db.execute("DELETE FROM users")
+                        bank_db.execute("DELETE FROM transactions")
+                        bank_db.execute("DELETE FROM blocks WHERE height > 0")
+                        bank_db.execute("DELETE FROM block_transactions")
+                        bank_db.execute("DELETE FROM utxos")
+                        # Сбрасываем счетчики
                         try:
-                            # Закрываем все транзакции
-                            temp_db._conn.execute("END TRANSACTION")
+                            bank_db.execute(
+                                "DELETE FROM sqlite_sequence WHERE name IN ('users', 'government_institutions')"
+                            )
                         except Exception:
                             pass
-                        try:
-                            temp_db._conn.close()
-                        except Exception:
-                            pass
-                    # Удаляем объект
-                    del temp_db
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        
-        # Дополнительная попытка: используем sqlite3 напрямую для закрытия соединений
-        for path in bank_db_files:
-            try:
-                # Пытаемся открыть и сразу закрыть соединение
-                temp_conn = sqlite3.connect(str(path), timeout=0.1)
-                try:
-                    temp_conn.execute("END TRANSACTION")
-                except Exception:
-                    pass
-                temp_conn.close()
-            except Exception:
-                pass
-        
-        # Собираем мусор, чтобы освободить ссылки на DatabaseManager
-        gc.collect()
-        time.sleep(0.8)  # Увеличиваем время ожидания
-        
-        # Пытаемся удалить файлы с повторными попытками
-        remaining_files = []
-        for attempt in range(20):  # Увеличиваем количество попыток до 20
-            remaining_files = []
-            for path in bank_db_files:
-                if not path.exists():
-                    continue
-                try:
-                    # Пытаемся удалить файл
-                    path.unlink()
-                except (PermissionError, OSError) as e:
-                    # Файл заблокирован или другая ошибка
-                    remaining_files.append(path)
-                    if attempt < 19:
-                        # Пытаемся принудительно закрыть соединение
-                        try:
-                            # Метод 1: Пытаемся переименовать файл (это освобождает блокировку в Windows)
-                            try:
-                                temp_name = str(path) + ".tmp_delete"
-                                if os.path.exists(temp_name):
-                                    try:
-                                        os.remove(temp_name)
-                                    except Exception:
-                                        pass
-                                os.rename(str(path), temp_name)
-                                # Если переименование успешно, удаляем переименованный файл
-                                try:
-                                    os.remove(temp_name)
-                                    continue  # Файл удален через переименование
-                                except Exception:
-                                    # Если не удалось удалить, возвращаем имя обратно
-                                    try:
-                                        os.rename(temp_name, str(path))
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                            
-                            # Метод 2: Пытаемся открыть и закрыть соединение через DatabaseManager
-                            try:
-                                from database import DatabaseManager
-                                # Пытаемся создать соединение в режиме WAL для лучшего контроля
-                                temp_db = DatabaseManager(str(path))
-                                if hasattr(temp_db, '_conn'):
-                                    try:
-                                        # Закрываем все транзакции
-                                        temp_db._conn.execute("END TRANSACTION")
-                                    except Exception:
-                                        pass
-                                    try:
-                                        temp_db._conn.close()
-                                    except Exception:
-                                        pass
-                                # Удаляем объект и собираем мусор
-                                del temp_db
-                                gc.collect()
-                                time.sleep(0.2)
-                            except Exception:
-                                pass
-                            
-                            # Метод 3: Пробуем открыть соединение напрямую и закрыть
-                            try:
-                                # Пытаемся открыть в режиме WAL для лучшего контроля
-                                temp_conn = sqlite3.connect(str(path), timeout=0.1)
-                                try:
-                                    # Закрываем все транзакции
-                                    temp_conn.execute("END TRANSACTION")
-                                except Exception:
-                                    pass
-                                temp_conn.close()
-                                time.sleep(0.1)
-                            except Exception:
-                                pass
-                            
-                            # Метод 4: Пытаемся открыть файл в режиме записи для освобождения блокировки
-                            try:
-                                with open(path, 'r+b') as f:
-                                    # Пытаемся прочитать и записать что-то, чтобы освободить блокировку
-                                    f.seek(0)
-                                    f.read(1)
-                                    f.seek(0)
-                                    f.write(b'')
-                                    f.flush()
-                                    os.fsync(f.fileno())
-                            except Exception:
-                                pass
-                            
-                            # Метод 5: Пытаемся использовать os.remove напрямую после задержки
-                            try:
-                                time.sleep(0.3)
-                                if path.exists():
-                                    os.remove(str(path))
-                                    continue  # Файл удален
-                            except Exception:
-                                pass
-                            
-                            time.sleep(0.5)
-                        except Exception:
-                            pass
-                    continue
-            
-            # Если все файлы удалены, выходим
-            if not remaining_files:
-                break
-            
-            bank_db_files = remaining_files
-            # Ждем перед следующей попыткой (увеличиваем время ожидания)
-            if attempt < 19:
-                time.sleep(0.8)
-        
-        # Если остались неудаленные файлы, пытаемся их удалить при следующем запуске
-        # или выводим предупреждение
-        if remaining_files:
-            import logging
-            logging.warning(
-                f"Не удалось удалить некоторые файлы БД банков: {[str(p) for p in remaining_files]}. "
-                f"Возможно, они открыты в другом процессе. Попробуйте закрыть приложение и удалить вручную."
-            )
-            # Пытаемся создать файл-маркер для удаления при следующем запуске
-            try:
-                marker_file = Path("._delete_bank_dbs_on_startup")
-                with open(marker_file, 'w') as f:
-                    for p in remaining_files:
-                        f.write(str(p) + '\n')
-            except Exception:
-                pass
+                    finally:
+                        bank_db.execute("PRAGMA foreign_keys = ON")
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Не удалось очистить БД банка {bank_id}: {e}")
 
     def create_banks(self, count: int) -> List[int]:
+        """
+        Создает банки. Используется только для внутренней инициализации.
+        Максимальное количество банков - DEFAULT_BANK_COUNT.
+        """
+        existing_banks = self.list_banks()
+        max_banks = DEFAULT_BANK_COUNT
+        
+        # Если уже есть максимальное количество банков, возвращаем существующие
+        if len(existing_banks) >= max_banks:
+            return [bank["id"] for bank in existing_banks[:max_banks]]
+        
+        # Ограничиваем количество создаваемых банков
+        available_slots = max_banks - len(existing_banks)
+        count = min(count, available_slots)
+        
+        if count <= 0:
+            return [bank["id"] for bank in existing_banks]
+        
         bank_ids: List[int] = []
         existing = self.db.execute("SELECT name FROM banks", fetchall=True) or []
         max_index = 0

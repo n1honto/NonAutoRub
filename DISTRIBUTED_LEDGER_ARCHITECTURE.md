@@ -423,7 +423,8 @@ flowchart TD
 flowchart TD
     START([Инициация синхронизации<br/>P2PNetwork.request_sync]) --> GET_LOCAL_STATE[ШАГ 1: Получение локального состояния<br/>ledger.get_last_block<br/>SELECT * FROM blocks<br/>ORDER BY height DESC LIMIT 1<br/>local_node.db]
     
-    GET_LOCAL_STATE --> LOCAL_HEIGHT[Определение локальной высоты<br/>our_height = last_block.height<br/>our_hash = last_block.hash]
+    GET_LOCAL_STATE --> LOCAL_HEIGHT[Определение локальной высоты<br/>our_height = last_block.hei
+    ght<br/>our_hash = last_block.hash]
     
     LOCAL_HEIGHT --> GET_TARGET_NODE[ШАГ 2: Выбор целевого узла<br/>node_manager.get_active_nodes<br/>Выбор узла для синхронизации]
     

@@ -357,21 +357,23 @@ class DigitalRubleApp(tk.Tk):
         yl_entry.grid(row=0, column=3, padx=5, pady=5)
         self._add_entry_menu(yl_entry)
 
-        ttk.Label(controls, text="Банки (ФО):").grid(row=0, column=4, padx=5, pady=5)
-        bank_entry = ttk.Entry(controls, width=5)
-        bank_entry.insert(0, "2")
-        bank_entry.grid(row=0, column=5, padx=5, pady=5)
-        self._add_entry_menu(bank_entry)
+        # Банки (ФО) убраны - они создаются автоматически при инициализации
 
-        ttk.Label(controls, text="Гос.организации:").grid(row=0, column=6, padx=5, pady=5)
+        ttk.Label(controls, text="Гос.организации:").grid(row=0, column=4, padx=5, pady=5)
         gov_entry = ttk.Entry(controls, width=5)
         gov_entry.insert(0, "1")
-        gov_entry.grid(row=0, column=7, padx=5, pady=5)
+        gov_entry.grid(row=0, column=5, padx=5, pady=5)
         self._add_entry_menu(gov_entry)
 
         def seed_entities() -> None:
             try:
-                self.platform.create_banks(int(bank_entry.get()))
+                # Банки создаются автоматически при инициализации платформы
+                # Проверяем наличие банков перед созданием пользователей
+                banks = self.platform.list_banks()
+                if not banks:
+                    messagebox.showerror("Ошибка", "Банки не инициализированы. Перезапустите приложение.")
+                    return
+                
                 self.platform.create_users(int(fl_entry.get()), "INDIVIDUAL")
                 self.platform.create_users(int(yl_entry.get()), "BUSINESS")
                 self.platform.create_government_institutions(int(gov_entry.get()))
@@ -388,7 +390,8 @@ class DigitalRubleApp(tk.Tk):
             if not messagebox.askyesno(
                 "Сброс модели",
                 "Вы уверены, что хотите полностью очистить все данные модели?\n"
-                "Будут удалены пользователи, банки, транзакции, смарт‑контракты и журналы.",
+                "Будут удалены пользователи, транзакции, смарт‑контракты и журналы.\n"
+                "Банки (ФО) останутся в системе как инфраструктура.",
             ):
                 return
             try:
@@ -842,6 +845,24 @@ class DigitalRubleApp(tk.Tk):
             text="Обновить визуализацию",
             command=self._ui_refresh_consensus,
         ).pack(side=tk.LEFT, padx=5)
+        
+        # Кнопки для имитации отказа и восстановления ЦБ
+        simulation_frame = ttk.LabelFrame(tab, text="Имитация отказа ЦБ")
+        simulation_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+        
+        ttk.Button(
+            simulation_frame,
+            text="Имитировать отказ ЦБ",
+            command=self._ui_simulate_cbr_failure,
+        ).pack(side=tk.LEFT, padx=5, pady=5)
+        
+        ttk.Button(
+            simulation_frame,
+            text="Экспортировать логи отказа ЦБ",
+            command=self._ui_export_failure_recovery_log,
+        ).pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Окно вывода логов удалено - логи доступны только через экспорт
 
     def _build_ledger_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -1079,9 +1100,11 @@ class DigitalRubleApp(tk.Tk):
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
         lines.append("  Распределение блока по узлам сети:")
         lines.append("    • Центральный банк РФ (главный реестр): блок присутствует ✓")
-        lines.append("    • Финансовая организация 1 (ФО): блок присутствует ✓")
-        lines.append("    • Финансовая организация 2 (ФО): блок присутствует ✓")
-        lines.append("  Всего узлов с блоком: 3/3")
+        banks = self.platform.list_banks()
+        for bank in banks:
+            lines.append(f"    • {bank['name']} (ФО): блок присутствует ✓")
+        total_nodes = 1 + len(banks)  # ЦБ + все ФО
+        lines.append(f"  Всего узлов с блоком: {total_nodes}/{total_nodes}")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Транзакция считается завершённой после:")
@@ -1268,9 +1291,11 @@ class DigitalRubleApp(tk.Tk):
         lines.append("ЭТАП 9: РЕПЛИКАЦИЯ НА УЗЛЫ")
         lines.append("  Распределение блока по узлам сети:")
         lines.append("    • Центральный банк РФ (главный реестр): блок присутствует ✓")
-        lines.append("    • Финансовая организация 1 (ФО): блок присутствует ✓")
-        lines.append("    • Финансовая организация 2 (ФО): блок присутствует ✓")
-        lines.append("  Всего узлов с блоком: 3/3")
+        banks = self.platform.list_banks()
+        for bank in banks:
+            lines.append(f"    • {bank['name']} (ФО): блок присутствует ✓")
+        total_nodes = 1 + len(banks)  # ЦБ + все ФО
+        lines.append(f"  Всего узлов с блоком: {total_nodes}/{total_nodes}")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
         lines.append("  Оффлайн-транзакция считается завершённой после:")
@@ -2448,13 +2473,19 @@ class DigitalRubleApp(tk.Tk):
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": "Смарт-контракт",
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
                     }
-                    if context_map.get(filter_value) != context:
-                        continue
+                    expected_contexts = context_map.get(filter_value)
+                    if expected_contexts:
+                        if isinstance(expected_contexts, list):
+                            if context not in expected_contexts:
+                                continue
+                        else:
+                            if expected_contexts != context:
+                                continue
                 
                 # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
@@ -2615,13 +2646,19 @@ class DigitalRubleApp(tk.Tk):
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": "Смарт-контракт",
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
                     }
-                    if context_map.get(filter_value) != context:
-                        continue
+                    expected_contexts = context_map.get(filter_value)
+                    if expected_contexts:
+                        if isinstance(expected_contexts, list):
+                            if context not in expected_contexts:
+                                continue
+                        else:
+                            if expected_contexts != context:
+                                continue
                 
                 # Поиск по ключевым словам: ищем по всей записи (включая id, время и т.п.)
                 if search_text:
@@ -2718,13 +2755,19 @@ class DigitalRubleApp(tk.Tk):
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": "Смарт-контракт",
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
                     }
-                    if context_map.get(filter_value) != context:
-                        continue
+                    expected_contexts = context_map.get(filter_value)
+                    if expected_contexts:
+                        if isinstance(expected_contexts, list):
+                            if context not in expected_contexts:
+                                continue
+                        else:
+                            if expected_contexts != context:
+                                continue
                 
                 # Поиск по ключевым словам
                 if search_text:
@@ -2786,13 +2829,19 @@ class DigitalRubleApp(tk.Tk):
                 if filter_value != "Все":
                     context_map = {
                         "Транзакции": "Транзакция",
-                        "Смарт-контракты": "Смарт-контракт",
+                        "Смарт-контракты": ["Смарт-контракт", "Смарт-контракты"],  # Поддерживаем оба варианта
                         "Эмиссия": "Эмиссия",
                         "Блоки": "Блок",
                         "Консенсус": "Консенсус",
                     }
-                    if context_map.get(filter_value) != context:
-                        continue
+                    expected_contexts = context_map.get(filter_value)
+                    if expected_contexts:
+                        if isinstance(expected_contexts, list):
+                            if context not in expected_contexts:
+                                continue
+                        else:
+                            if expected_contexts != context:
+                                continue
                 
                 # Поиск по ключевым словам
                 if search_text:
@@ -2890,26 +2939,84 @@ class DigitalRubleApp(tk.Tk):
                 )
                 return
             width = int(canvas.winfo_width() or 1200)
-            leader = nodes[0]
-            bank_nodes = nodes[1:]
+            
+            # Разделяем ЦБ и банки явно
+            cbr_nodes = [n for n in nodes if "CBR" in n.upper() or "ЦБ" in n.upper()]
+            bank_nodes = [n for n in nodes if "BANK" in n.upper() and n not in cbr_nodes]
+            
+            # Определяем лидера из событий консенсуса или по умолчанию
+            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
+            active_actor = self._consensus_active_actor if hasattr(self, '_consensus_active_actor') else None
+            
+            # Проверяем, есть ли временный лидер в событиях
+            temp_leader = None
+            if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
+                # Ищем последнее событие LEADER_ELECTED или LEADER_APPEND
+                for event in reversed(self._consensus_anim_events[:self._consensus_anim_index + 1]):
+                    if event.get("state") in {"LEADER_ELECTED", "LEADER_APPEND", "LEADER"}:
+                        actor = event.get("actor", "")
+                        if actor and "BANK" in actor.upper():
+                            temp_leader = actor
+                            break
+            
+            # ЦБ всегда сверху (если есть и не отказал)
+            leader = None
+            if cbr_nodes:
+                # Проверяем, не отказал ли ЦБ (по событиям)
+                cbr_failed = False
+                if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
+                    for event in self._consensus_anim_events[:self._consensus_anim_index + 1]:
+                        if event.get("state") == "CBR_FAILURE_SIMULATED":
+                            cbr_failed = True
+                            break
+                
+                if not cbr_failed:
+                    leader = cbr_nodes[0]
+            
+            # Если ЦБ отказал или нет, используем временного лидера из банков
+            if not leader:
+                if temp_leader and temp_leader in bank_nodes:
+                    leader = temp_leader
+                    bank_nodes = [n for n in bank_nodes if n != temp_leader]
+                elif active_actor and "BANK" in active_actor.upper() and current_state in {"LEADER", "LEADER_APPEND"}:
+                    leader = active_actor
+                    bank_nodes = [n for n in bank_nodes if n != active_actor]
+                elif bank_nodes:
+                    # Если временный лидер не определен, берем первый банк
+                    leader = bank_nodes[0]
+                    bank_nodes = bank_nodes[1:]
 
             active_actor = self._consensus_active_actor
             if active_actor is None:
                 recent_events = self.platform.consensus.get_recent_events(limit=1)
                 active_actor = recent_events[0].actor if recent_events and len(recent_events) > 0 else None
 
+            # ЦБ отображается сверху по центру
             leader_x = width // 2
-            leader_y = 120
-
-            # ЦБ всегда лидер, не выходит из строя
-            if self._consensus_active_state in {"LEADER", "LEADER_APPEND"}:
-                leader_fill = "#10b981"
-            else:
-                leader_fill = "#10b981"  # ЦБ всегда лидер (зеленый)
+            leader_y = 80  # Выше, чем банки
+            
+            # Инициализируем значения по умолчанию
+            leader_fill = "#10b981"  # По умолчанию зеленый
+            leader_label = "Нет лидера"
+            
+            if leader:
+                # Определяем, является ли лидер ЦБ
+                is_cbr = "CBR" in leader.upper() or "ЦБ" in leader.upper()
+                
+                # ЦБ всегда зеленый, временный лидер (ФО) тоже зеленый когда активен
+                if is_cbr:
+                    leader_fill = "#10b981"  # ЦБ всегда зеленый
+                    leader_label = "ЦБ РФ"
+                else:
+                    # Временный лидер (ФО) - всегда зеленый
+                    leader_fill = "#10b981"
+                    leader_label = leader
+                
             canvas.create_oval(
-                leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, fill=leader_fill, outline="#0f172a", width=2
+                leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, 
+                fill=leader_fill, outline="#0f172a", width=2
             )
-            canvas.create_text(leader_x, leader_y, text=leader, fill="black", width=140)
+            canvas.create_text(leader_x, leader_y, text=leader_label, fill="black", width=140, font=("TkDefaultFont", 9, "bold"))
 
             if bank_nodes:
                 min_spacing = 120
@@ -2917,15 +3024,36 @@ class DigitalRubleApp(tk.Tk):
                 spacing = max(calculated_spacing, min_spacing)
                 if spacing < min_spacing:
                     spacing = min_spacing
-                y_banks = 220
+                y_banks = 200  # Банки в строчку ниже ЦБ
             
             # Определяем активные узлы на текущем этапе
             active_nodes = self._consensus_active_nodes if hasattr(self, '_consensus_active_nodes') else set()
+            # Активными могут быть только банки (ФО), не ЦБ
             if active_actor and active_actor != leader and active_actor in bank_nodes:
-                active_nodes.add(active_actor)
+                # Проверяем, что активный актор - это ФО, а не ЦБ
+                if "CBR" not in active_actor.upper() and "ЦБ" not in active_actor.upper():
+                    active_nodes.add(active_actor)
+            
+            # Находим кандидата из событий для этапа голосования
+            candidate_node = None
+            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
+            if current_state in {"ELECTION_START", "CANDIDATE", "VOTE_GRANTED", "VOTE_DENIED"}:
+                # Ищем кандидата в активных узлах или из событий
+                if active_actor and "BANK" in active_actor.upper() and current_state in {"ELECTION_START", "CANDIDATE"}:
+                    candidate_node = active_actor
+                else:
+                    # Ищем кандидата в активных узлах
+                    for node_id in active_nodes:
+                        if "BANK" in node_id.upper():
+                            candidate_node = node_id
+                            break
             
             # Сохраняем координаты узлов для анимации стрелок
             node_positions = {}
+            
+            # Если лидер - это банк (временный лидер), сохраняем его координаты сверху
+            if leader and "BANK" in leader.upper():
+                node_positions[leader] = (leader_x, leader_y)
             
             for idx, node in enumerate(bank_nodes, start=1):
                 x = spacing * idx
@@ -2950,49 +3078,280 @@ class DigitalRubleApp(tk.Tk):
                 )
                 canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 9, "bold"), width=120)
                 
-                # Рисуем стрелку только для активных узлов на текущем этапе
-                if node in active_nodes or node == active_actor:
-                    # Анимированная стрелка от ЦБ к активному узлу
-                    line_color = "#10b981"
-                    line_width = 3
-                    # Рисуем стрелку с анимацией (более яркая для активных)
-                    canvas.create_line(
-                        leader_x,
-                        leader_y + 45,
-                        x,
-                        y_banks - 35,
-                        arrow=tk.LAST,
-                        fill=line_color,
-                        width=line_width,
-                        arrowshape=(10, 12, 3)
-                    )
-                elif self._consensus_active_state in {"SIGN_REQUEST", "VOTE_GRANTED", "REPLICATION", "APPEND_ENTRIES"}:
-                    # Показываем серую пунктирную стрелку для неактивных узлов во время запросов
-                    canvas.create_line(
-                        leader_x,
-                        leader_y + 45,
-                        x,
-                        y_banks - 35,
-                        arrow=tk.LAST,
-                        fill="#9ca3af",
-                        width=1,
-                        dash=(5, 5)
-                    )
+                # Определяем тип связи в зависимости от этапа консенсуса
+                current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
+                
+                # ЭТАП 1: ГОЛОСОВАНИЕ ЗА ПРИНЯТИЕ БЛОКА (штатный режим)
+                # Стрелки от лидера (ЦБ или временного) к узлам (запрос голосования) и от узлов к лидеру (подтверждение)
+                if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
+                    if leader:  # Только если есть лидер (ЦБ или временный)
+                        # Определяем координаты лидера
+                        leader_draw_x = leader_x
+                        leader_draw_y = leader_y
+                        leader_offset = 45
+                        
+                        # Если лидер - временный (ФО), он тоже сверху
+                        if "BANK" in leader.upper() and leader in node_positions:
+                            temp_x, temp_y = node_positions[leader]
+                            if temp_y != leader_y:
+                                leader_draw_x = temp_x
+                                leader_draw_y = temp_y
+                                leader_offset = 35
+                        
+                        # Лидер отправляет запросы голосования всем узлам
+                        # Показываем стрелку от лидера к узлу (запрос)
+                        canvas.create_line(
+                            leader_draw_x,
+                            leader_draw_y + leader_offset,
+                            x,
+                            y_banks - 35,
+                            arrow=tk.LAST,
+                            fill="#f59e0b",  # Оранжевый для запроса голосования
+                            width=2,
+                            arrowshape=(8, 10, 3),
+                            dash=(3, 3)
+                        )
+                        # Если узел уже проголосовал, показываем обратную стрелку (подтверждение)
+                        if node in active_nodes or node == active_actor:
+                            if current_state == "VOTE_GRANTED":
+                                # Стрелка от узла к лидеру (подтверждение голосования)
+                                canvas.create_line(
+                                    x,
+                                    y_banks + 35,
+                                    leader_draw_x,
+                                    leader_draw_y - leader_offset,
+                                    arrow=tk.LAST,
+                                    fill="#10b981",  # Зеленый для подтверждения
+                                    width=2,
+                                    arrowshape=(8, 10, 3)
+                                )
+                
+                # ЭТАП 2: ГОЛОСОВАНИЕ (выборы временного лидера при отказе ЦБ)
+                # Стрелки от банков к кандидату (временному лидеру)
+                elif current_state in {"ELECTION_START", "CANDIDATE"}:
+                    # Если этот узел - кандидат, показываем стрелки от других банков к нему
+                    if candidate_node and node == candidate_node:
+                        # Рисуем стрелки от других банков к кандидату
+                        for other_node in bank_nodes:
+                            if other_node != node:
+                                other_x, _ = node_positions.get(other_node, (0, 0))
+                                if other_x > 0:
+                                    # Определяем стиль стрелки в зависимости от того, проголосовал ли узел
+                                    if other_node in active_nodes:
+                                        # Узел уже проголосовал - сплошная стрелка
+                                        canvas.create_line(
+                                            other_x,
+                                            y_banks + 35,
+                                            x,
+                                            y_banks - 35,
+                                            arrow=tk.LAST,
+                                            fill="#f59e0b",  # Оранжевый для голосования
+                                            width=2,
+                                            arrowshape=(8, 10, 3)
+                                        )
+                                    else:
+                                        # Узел еще не проголосовал - пунктирная стрелка
+                                        canvas.create_line(
+                                            other_x,
+                                            y_banks + 35,
+                                            x,
+                                            y_banks - 35,
+                                            arrow=tk.LAST,
+                                            fill="#fbbf24",  # Светло-оранжевый для ожидания
+                                            width=1,
+                                            arrowshape=(6, 8, 2),
+                                            dash=(5, 5)
+                                        )
+                    # Если этот узел голосует за кандидата (только для выборов лидера)
+                    elif candidate_node and current_state == "VOTE_GRANTED" and node in active_nodes:
+                        # Проверяем, что это голосование за выборы лидера, а не за принятие блока
+                        is_election = any(e.get("state") in {"ELECTION_START", "CANDIDATE"} 
+                                        for e in (self._consensus_anim_events[:self._consensus_anim_index + 1] 
+                                                 if hasattr(self, '_consensus_anim_events') else []))
+                        if is_election:
+                            candidate_x, _ = node_positions.get(candidate_node, (0, 0))
+                            if candidate_x > 0:
+                                # Стрелка от этого узла к кандидату
+                                canvas.create_line(
+                                    x,
+                                    y_banks + 35,
+                                    candidate_x,
+                                    y_banks - 35,
+                                    arrow=tk.LAST,
+                                    fill="#f59e0b",  # Оранжевый для голосования
+                                    width=2,
+                                    arrowshape=(8, 10, 3)
+                                )
+                
+                # ЭТАП 3: РЕПЛИКАЦИЯ (после голосования за принятие блока)
+                # Стрелки от лидера ко ВСЕМ банкам (все ФО участвуют в репликации)
+                elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
+                    if leader:  # Только если есть лидер
+                        # ВСЕ банки получают репликацию, показываем стрелки ко всем
+                        # ВАЖНО: Проверяем, что узел получил репликацию (в активных узлах, в событиях или просто показываем всем)
+                        node_received = (node in active_nodes or 
+                                       node == active_actor)
+                        
+                        # Также проверяем события репликации для этого узла
+                        if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
+                            for e in self._consensus_anim_events[:self._consensus_anim_index + 1]:
+                                if e.get("actor") == node and e.get("state") == "REPLICATION":
+                                    node_received = True
+                                    break
+                        
+                        # Определяем координаты лидера (может быть ЦБ сверху или временный лидер)
+                        leader_draw_x = leader_x
+                        leader_draw_y = leader_y
+                        leader_offset = 45  # Смещение для стрелки от лидера
+                        
+                        # Если лидер - временный (ФО), он тоже сверху, используем те же координаты
+                        if "BANK" in leader.upper() and leader in node_positions:
+                            temp_x, temp_y = node_positions[leader]
+                            # Если временный лидер не сверху, используем его координаты
+                            if temp_y != leader_y:
+                                leader_draw_x = temp_x
+                                leader_draw_y = temp_y
+                                leader_offset = 35
+                        
+                        if node_received:
+                            # Анимированная стрелка от лидера к узлу (получил репликацию)
+                            line_color = "#10b981"
+                            line_width = 3
+                            canvas.create_line(
+                                leader_draw_x,
+                                leader_draw_y + leader_offset,
+                                x,
+                                y_banks - 35,
+                                arrow=tk.LAST,
+                                fill=line_color,
+                                width=line_width,
+                                arrowshape=(10, 12, 3)
+                            )
+                        else:
+                            # Показываем стрелку для узла, который еще получает репликацию
+                            # ВСЕ узлы должны получать репликацию, поэтому показываем всем
+                            canvas.create_line(
+                                leader_draw_x,
+                                leader_draw_y + leader_offset,
+                                x,
+                                y_banks - 35,
+                                arrow=tk.LAST,
+                                fill="#10b981",  # Зеленый для всех репликаций
+                                width=2,
+                                dash=(3, 3)  # Пунктирная для ожидающих
+                            )
+                
+                # Обычная работа (штатный режим) - всегда рисуем стрелки от лидера к узлам
+                # Это обеспечивает визуализацию даже после отказа ЦБ
+                if current_state not in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED",
+                                        "ELECTION_START", "CANDIDATE", "REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
+                    if leader:
+                        # Определяем координаты лидера
+                        leader_draw_x = leader_x
+                        leader_draw_y = leader_y
+                        leader_offset = 45
+                        
+                        # Если лидер - временный (ФО), он тоже сверху
+                        if "BANK" in leader.upper() and leader in node_positions:
+                            temp_x, temp_y = node_positions[leader]
+                            if temp_y != leader_y:
+                                leader_draw_x = temp_x
+                                leader_draw_y = temp_y
+                                leader_offset = 35
+                        
+                        # Рисуем стрелку от лидера к узлу (всегда, как до отказа ЦБ)
+                        if node in active_nodes or node == active_actor:
+                            # Анимированная стрелка от лидера к активному узлу
+                            line_color = "#10b981"
+                            line_width = 3
+                            canvas.create_line(
+                                leader_draw_x,
+                                leader_draw_y + leader_offset,
+                                x,
+                                y_banks - 35,
+                                arrow=tk.LAST,
+                                fill=line_color,
+                                width=line_width,
+                                arrowshape=(10, 12, 3)
+                            )
+                        else:
+                            # Показываем стрелку для неактивного узла (пунктирная)
+                            canvas.create_line(
+                                leader_draw_x,
+                                leader_draw_y + leader_offset,
+                                x,
+                                y_banks - 35,
+                                arrow=tk.LAST,
+                                fill="#10b981",
+                                width=2,
+                                dash=(3, 3)
+                            )
             subtitle = self._consensus_active_event or ""
-            if self._consensus_votes is not None and self._consensus_total_banks is not None:
-                votes = self._consensus_votes
-                replications = self._consensus_replications or 0
-                total_banks = self._consensus_total_banks
+            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
+            
+            # Определяем этап консенсуса для отображения
+            if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
+                # Этап голосования за принятие блока
+                if self._consensus_votes is not None and self._consensus_total_banks is not None:
+                    votes = self._consensus_votes
+                    total_banks = self._consensus_total_banks
+                else:
+                    votes = 0
+                    total_banks = max(len(bank_nodes), 1)
+                canvas.create_text(
+                    width // 2,
+                    50,
+                    text=f"ЭТАП: ГОЛОСОВАНИЕ ЗА ПРИНЯТИЕ БЛОКА | Голосов: {votes}/{total_banks}",
+                    fill="#f59e0b",
+                    font=("TkDefaultFont", 10, "bold")
+                )
+            elif current_state in {"ELECTION_START", "CANDIDATE"}:
+                # Этап выборов временного лидера
+                if self._consensus_votes is not None and self._consensus_total_banks is not None:
+                    votes = self._consensus_votes
+                    total_banks = self._consensus_total_banks
+                else:
+                    votes = 0
+                    total_banks = max(len(bank_nodes), 1)
+                canvas.create_text(
+                    width // 2,
+                    50,
+                    text=f"ЭТАП: ВЫБОРЫ ВРЕМЕННОГО ЛИДЕРА | Голосов: {votes}/{total_banks}",
+                    fill="#f59e0b",
+                    font=("TkDefaultFont", 10, "bold")
+                )
+            elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
+                # Этап репликации
+                if self._consensus_replications is not None and self._consensus_total_banks is not None:
+                    replications = self._consensus_replications
+                    total_banks = self._consensus_total_banks
+                else:
+                    replications = 0
+                    total_banks = max(len(bank_nodes), 1)
+                canvas.create_text(
+                    width // 2,
+                    50,
+                    text=f"ЭТАП: РЕПЛИКАЦИЯ | Репликаций: {replications}/{total_banks}",
+                    fill="#10b981",
+                    font=("TkDefaultFont", 10, "bold")
+                )
             else:
-                votes = 0
-                replications = 0
-                total_banks = max(len(bank_nodes), 1)
-            canvas.create_text(
-                width // 2,
-                50,
-                text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
-                fill="#4b5563",
-            )
+                # Обычный режим
+                if self._consensus_votes is not None and self._consensus_total_banks is not None:
+                    votes = self._consensus_votes
+                    replications = self._consensus_replications or 0
+                    total_banks = self._consensus_total_banks
+                else:
+                    votes = 0
+                    replications = 0
+                    total_banks = max(len(bank_nodes), 1)
+                canvas.create_text(
+                    width // 2,
+                    50,
+                    text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
+                    fill="#4b5563",
+                )
+            
             if subtitle:
                 canvas.create_text(
                     width // 2,
@@ -3166,6 +3525,573 @@ class DigitalRubleApp(tk.Tk):
         """Обновить таблицу и перезапустить анимацию консенсуса/реестра."""
         self.refresh_all()
         self._start_consensus_animation()
+    
+    def _ui_simulate_cbr_failure(self) -> None:
+        """Имитирует отказ ЦБ, запускает процесс выборов временного лидера и автоматически восстанавливает ЦБ."""
+        try:
+            # Имитируем отказ ЦБ
+            self.platform.consensus.simulate_cbr_failure()
+            
+            # Запускаем процесс выборов для банков
+            # Создаем фиктивный блок для запуска процесса консенсуса
+            from datetime import datetime, timezone
+            fake_block_hash = f"failure-sim-{datetime.now(timezone.utc).isoformat()}"
+            
+            # Для каждого банка запускаем процесс выборов
+            banks = self.platform.list_banks()
+            for bank in banks:
+                bank_id = bank["id"]
+                try:
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(f"bank_{bank_id}.db")
+                    # Создаем консенсус для банка
+                    from consensus import RaftConsensus
+                    bank_consensus = RaftConsensus(bank_db, node_id=f"BANK_{bank_id}")
+                    bank_consensus.simulate_cbr_failure()
+                    
+                    # ВАЖНО: Только банки (ФО) могут инициировать выборы временного лидера
+                    # ЦБ НЕ должен участвовать в выборах
+                    if not bank_consensus.is_central_bank:
+                        # Запускаем раунд консенсуса для банка (это инициирует выборы)
+                        bank_consensus.run_round(fake_block_hash)
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Ошибка при имитации отказа для банка {bank_id}: {e}")
+            
+            # Обновляем визуализацию
+            self.refresh_all()
+            self._start_consensus_animation()
+            
+            # Логи доступны только через экспорт
+            
+            # Автоматическое восстановление через 5 секунд
+            self.after(5000, self._auto_recover_cbr)
+            
+            messagebox.showinfo(
+                "Имитация отказа ЦБ",
+                "Отказ ЦБ успешно имитирован.\n"
+                "Банки инициируют выборы временного лидера.\n"
+                "Восстановление ЦБ произойдет автоматически через 5 секунд.\n"
+                "Проверьте детальные логи для просмотра процесса."
+            )
+        except Exception as exc:
+            messagebox.showerror("Ошибка", f"Не удалось имитировать отказ ЦБ: {exc}")
+    
+    def _auto_recover_cbr(self) -> None:
+        """Автоматически восстанавливает ЦБ после отказа."""
+        try:
+            # Восстанавливаем ЦБ
+            self.platform.consensus.simulate_cbr_recovery()
+            
+            # Обновляем состояние банков
+            banks = self.platform.list_banks()
+            for bank in banks:
+                bank_id = bank["id"]
+                try:
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(f"bank_{bank_id}.db")
+                    from consensus import RaftConsensus
+                    bank_consensus = RaftConsensus(bank_db, node_id=f"BANK_{bank_id}")
+                    bank_consensus.simulate_cbr_recovery()
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Ошибка при восстановлении для банка {bank_id}: {e}")
+            
+            # Обновляем визуализацию
+            self.refresh_all()
+            self._start_consensus_animation()
+            
+            # Логи будут доступны для экспорта
+        except Exception as exc:
+            import logging
+            logging.error(f"Ошибка при автоматическом восстановлении ЦБ: {exc}")
+    
+    def _ui_export_failure_recovery_log(self) -> None:
+        """Экспортирует детальные логи всех процессов от отказа до восстановления в файл."""
+        try:
+            
+            # Получаем логи от ЦБ
+            cbr_log = self.platform.consensus.get_failure_recovery_log()
+            
+            # Получаем логи от всех банков
+            all_logs = []
+            banks = self.platform.list_banks()
+            for bank in banks:
+                bank_id = bank["id"]
+                try:
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(f"bank_{bank_id}.db")
+                    from consensus import RaftConsensus
+                    bank_consensus = RaftConsensus(bank_db, node_id=f"BANK_{bank_id}")
+                    bank_log = bank_consensus.get_failure_recovery_log()
+                    all_logs.extend(bank_log)
+                except Exception:
+                    pass
+            
+            # Объединяем логи
+            all_logs.extend(cbr_log)
+            
+            # Сортируем по времени
+            all_logs.sort(key=lambda x: x.get("timestamp", ""))
+            
+            # Формируем детальный вывод
+            output_lines = []
+            output_lines.append("=" * 100)
+            output_lines.append("ДЕТАЛЬНЫЕ ЛОГИ ПРОЦЕССОВ: ОТКАЗ ЦБ → ВОССТАНОВЛЕНИЕ")
+            output_lines.append("=" * 100)
+            output_lines.append("")
+            
+            if not all_logs:
+                output_lines.append("Логи процессов пока отсутствуют.")
+                output_lines.append("Используйте кнопку 'Имитировать отказ ЦБ' для генерации логов.")
+            else:
+                # Группируем логи по этапам
+                failure_events = []
+                election_events = []
+                recovery_events = []
+                
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    
+                    if "ОТКАЗ" in event or "FAILURE" in state:
+                        failure_events.append(log_entry)
+                    elif "ВЫБОРЫ" in event or "ELECTION" in state or "LEADER_ELECTED" in state:
+                        election_events.append(log_entry)
+                    elif "ВОССТАНОВЛ" in event or "RECOVERED" in state or "TRANSFERRED" in state:
+                        recovery_events.append(log_entry)
+                
+                # Этап 1: Отказ ЦБ
+                output_lines.append("ЭТАП 1: ОТКАЗ ЦЕНТРАЛЬНОГО БАНКА")
+                output_lines.append("-" * 100)
+                if failure_events:
+                    # Показываем только уникальные события отказа (чтобы избежать дубликатов)
+                    seen_failures = set()
+                    for event in failure_events:
+                        event_key = f"{event.get('actor')}_{event.get('state')}"
+                        if event_key not in seen_failures:
+                            seen_failures.add(event_key)
+                            timestamp = event.get("timestamp", "")
+                            actor = event.get("actor", "")
+                            event_text = event.get("event", "")
+                            state = event.get("state", "")
+                            output_lines.append(f"[{timestamp}] {actor} ({state}): {event_text}")
+                else:
+                    output_lines.append("  События отказа ЦБ отсутствуют.")
+                output_lines.append("")
+                
+                # Этап 2: Детектирование отказа банками
+                output_lines.append("ЭТАП 2: ДЕТЕКТИРОВАНИЕ ОТКАЗА БАНКАМИ")
+                output_lines.append("-" * 100)
+                output_lines.append("  Банки обнаруживают отсутствие heartbeat от ЦБ")
+                output_lines.append(f"  Таймаут heartbeat превышен: {self.platform.consensus.election_timeout:.2f} секунд")
+                output_lines.append("  Банки инициируют процесс выборов временного лидера")
+                output_lines.append("")
+                
+                # Этап 3: Выборы временного лидера
+                output_lines.append("ЭТАП 3: ВЫБОРЫ ВРЕМЕННОГО ЛИДЕРА СРЕДИ ФО (НЕ ЦБ)")
+                output_lines.append("-" * 100)
+                output_lines.append("  После отказа ЦБ новый лидер выбирается среди Финансовых Организаций (ФО)")
+                output_lines.append("  Кандидатом становится ФО с наибольшим логическим индексом (log_index)")
+                output_lines.append("  Процесс голосования за принятие нового лидера (кворум)")
+                output_lines.append("")
+                if election_events:
+                    # Группируем по термам
+                    terms = {}
+                    other_events = []
+                    
+                    for event in election_events:
+                        event_text = event.get("event", "")
+                        if "term-" in event_text:
+                            try:
+                                # Извлекаем терм из текста события
+                                parts = event_text.split("term-")
+                                if len(parts) > 1:
+                                    term_part = parts[1].split()[0] if parts[1] else "0"
+                                    if term_part not in terms:
+                                        terms[term_part] = []
+                                    terms[term_part].append(event)
+                                else:
+                                    other_events.append(event)
+                            except Exception:
+                                other_events.append(event)
+                        else:
+                            other_events.append(event)
+                    
+                    # Выводим события по термам с детализацией голосования
+                    for term, events in sorted(terms.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
+                        output_lines.append(f"  ТЕРМ {term}:")
+                        
+                        # Находим кандидата и процесс голосования
+                        candidate = None
+                        votes = []
+                        leader_elected = None
+                        candidate_analysis = None
+                        
+                        for event in events:
+                            event_text = event.get("event", "")
+                            state = event.get("state", "")
+                            actor = event.get("actor", "")
+                            
+                            if "CANDIDATE_ANALYSIS" in state or "Анализ кандидатов" in event_text:
+                                candidate_analysis = event_text
+                            elif "ELECTION_START" in state or "становится кандидатом" in event_text:
+                                # Проверяем, что кандидат - это ФО, а не ЦБ
+                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                    candidate = actor
+                            elif "VOTE_GRANTED" in state or "Голос получен" in event_text:
+                                # Проверяем, что голосующий - это ФО, а не ЦБ
+                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                    votes.append(actor)
+                            elif "LEADER_ELECTED" in state or "избран временным лидером" in event_text:
+                                # Проверяем, что избранный - это ФО, а не ЦБ
+                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                    leader_elected = actor
+                        
+                        # Показываем процесс выборов
+                        if candidate:
+                            # Находим информацию о log_index кандидата
+                            candidate_log_index = None
+                            for event in events:
+                                event_text = event.get("event", "")
+                                if "log_index" in event_text and candidate in event_text:
+                                    try:
+                                        # Извлекаем log_index из текста
+                                        if "log_index=" in event_text:
+                                            idx_part = event_text.split("log_index=")[1].split()[0].rstrip(")")
+                                            candidate_log_index = idx_part
+                                        elif "log_index: " in event_text:
+                                            idx_part = event_text.split("log_index: ")[1].split()[0]
+                                            candidate_log_index = idx_part
+                                    except:
+                                        pass
+                            
+                            # Проверяем, что кандидат - это ФО, а не ЦБ
+                            if "CBR" in candidate.upper() or "ЦБ" in candidate.upper():
+                                output_lines.append(f"    ОШИБКА: ЦБ не может быть кандидатом на роль временного лидера!")
+                                output_lines.append(f"    Выборы должны проводиться только среди ФО (Финансовых Организаций)")
+                                continue
+                            
+                            output_lines.append(f"    КАНДИДАТ: {candidate} (ФО с наибольшим log_index: {candidate_log_index or 'неизвестно'})")
+                            output_lines.append(f"    ВАЖНО: Выборы проводятся ТОЛЬКО среди ФО, ЦБ не участвует в выборах")
+                            output_lines.append(f"    ПРОЦЕСС ГОЛОСОВАНИЯ ЗА ПРИНЯТИЕ НОВОГО ЛИДЕРА (КВОРУМ):")
+                            
+                            # Находим информацию о кворуме
+                            nodes_count = len([e for e in events if "BANK" in e.get("actor", "") or "CBR" not in e.get("actor", "")])
+                            majority_needed = (nodes_count // 2) + 1 if nodes_count > 0 else 1
+                            
+                            if votes:
+                                output_lines.append(f"      Необходимо голосов для кворума: {majority_needed}")
+                                for voter in votes:
+                                    output_lines.append(f"      ✓ {voter} проголосовал ЗА {candidate}")
+                            else:
+                                output_lines.append(f"      (Голоса пока не получены)")
+                                output_lines.append(f"      Необходимо голосов для кворума: {majority_needed}")
+                            
+                            if leader_elected:
+                                # Проверяем, что избранный лидер - это ФО, а не ЦБ
+                                if "CBR" in leader_elected.upper() or "ЦБ" in leader_elected.upper():
+                                    output_lines.append(f"    ОШИБКА: ЦБ не может быть избран временным лидером!")
+                                    output_lines.append(f"    Временным лидером может быть только ФО (Финансовая Организация)")
+                                else:
+                                    total_votes = len(votes) + 1  # +1 за голос кандидата за себя
+                                    output_lines.append(f"    РЕЗУЛЬТАТ: {leader_elected} (ФО) ИЗБРАН ВРЕМЕННЫМ ЛИДЕРОМ")
+                                    output_lines.append(f"    Всего голосов: {total_votes} (включая голос кандидата за себя)")
+                                    output_lines.append(f"    Кворум достигнут: {total_votes} >= {majority_needed}")
+                                    output_lines.append(f"    ВАЖНО: Временный лидер - это ФО, а не ЦБ")
+                            output_lines.append("")
+                        
+                        # НЕ показываем все события терма здесь - они будут в хронологии
+                        # Это предотвращает дублирование строк
+                        output_lines.append("")
+                    
+                    # НЕ показываем остальные события выборов здесь - они будут в хронологии
+                    # Это предотвращает дублирование строк
+                    if other_events:
+                        output_lines.append("  (Детальные события выборов см. в хронологии ниже)")
+                        output_lines.append("")
+                else:
+                    output_lines.append("  События выборов отсутствуют.")
+                    output_lines.append("  Примечание: Выборы будут инициированы при следующем создании блока.")
+                output_lines.append("")
+                
+                # Этап 4: Работа временного лидера (ФО выполняет роль ЦБ)
+                output_lines.append("ЭТАП 4: РАБОТА ВРЕМЕННОГО ЛИДЕРА (ФО ВЫПОЛНЯЕТ РОЛЬ ЦБ)")
+                output_lines.append("-" * 100)
+                output_lines.append("  ВАЖНО: Временный лидер только формирует блоки, НЕ выполняет репликацию")
+                output_lines.append("  Сформированные блоки хранятся до восстановления ЦБ")
+                output_lines.append("")
+                
+                # Ищем события работы временного лидера
+                leader_work_events = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    # События работы временного лидера (но не ЦБ)
+                    if (("ЛИДЕР" in event or "LEADER" in state) and 
+                        "BANK" in actor.upper() and 
+                        "ВРЕМЕННЫЙ" not in event and "ВЫБОРЫ" not in event):
+                        leader_work_events.append(log_entry)
+                    elif "ФОРМИРУЕТ БЛОК" in event or "LEADER_APPEND" in state:
+                        if "BANK" in actor.upper():
+                            leader_work_events.append(log_entry)
+                    elif "BLOCK_STORED" in state or "сохраняет сформированный блок" in event:
+                        if "BANK" in actor.upper():
+                            leader_work_events.append(log_entry)
+                
+                if leader_work_events:
+                    output_lines.append("  Временный лидер (ФО) формирует блоки:")
+                    output_lines.append("")
+                    
+                    # Группируем события по типам
+                    block_creation = []
+                    block_storage = []
+                    
+                    for event in leader_work_events:
+                        event_text = event.get("event", "").upper()
+                        state = event.get("state", "")
+                        
+                        if "ФОРМИРУЕТ БЛОК" in event_text or "LEADER_APPEND" in state:
+                            block_creation.append(event)
+                        elif "BLOCK_STORED" in state or "сохраняет" in event_text:
+                            block_storage.append(event)
+                    
+                    # Показываем формирование блоков (только краткую информацию)
+                    if block_creation:
+                        output_lines.append("  ФОРМИРОВАНИЕ БЛОКОВ:")
+                        # Подсчитываем количество блоков
+                        unique_blocks = set()
+                        for event in block_creation:
+                            block_hash = event.get("block_hash", "")
+                            if block_hash and block_hash not in ["cbr-failure-simulation", "cbr-recovery-simulation"]:
+                                unique_blocks.add(block_hash)
+                        output_lines.append(f"    • Сформировано блоков: {len(unique_blocks)}")
+                        output_lines.append(f"    • (Детальные события формирования блоков см. в хронологии ниже)")
+                        output_lines.append("")
+                    
+                    # Показываем сохранение блоков (только краткую информацию)
+                    if block_storage:
+                        output_lines.append("  СОХРАНЕНИЕ БЛОКОВ (до восстановления ЦБ):")
+                        output_lines.append(f"    • Блоки сохранены локально до восстановления ЦБ")
+                        output_lines.append(f"    • (Детальные события сохранения блоков см. в хронологии ниже)")
+                        output_lines.append("")
+                    
+                    output_lines.append("  ПРИМЕЧАНИЕ: Временный лидер НЕ выполняет репликацию блоков")
+                    output_lines.append("  Блоки хранятся локально до восстановления ЦБ")
+                    output_lines.append("")
+                else:
+                    output_lines.append("  Временный лидер формирует блоки и сохраняет их до восстановления ЦБ")
+                    output_lines.append("  Репликация не выполняется")
+                output_lines.append("")
+                
+                # Этап 5: Восстановление ЦБ
+                output_lines.append("ЭТАП 5: ВОССТАНОВЛЕНИЕ ЦЕНТРАЛЬНОГО БАНКА")
+                output_lines.append("-" * 100)
+                if recovery_events:
+                    for event in recovery_events:
+                        timestamp = event.get("timestamp", "")
+                        actor = event.get("actor", "")
+                        event_text = event.get("event", "")
+                        state = event.get("state", "")
+                        output_lines.append(f"[{timestamp}] {actor} ({state}): {event_text}")
+                else:
+                    output_lines.append("  События восстановления отсутствуют.")
+                output_lines.append("")
+                
+                # Этап 6: Передача управления и данных обратно ЦБ
+                output_lines.append("ЭТАП 6: ПЕРЕДАЧА УПРАВЛЕНИЯ И ДАННЫХ ОБРАТНО ЦБ")
+                output_lines.append("-" * 100)
+                
+                # Ищем события передачи управления
+                transfer_events = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    if "ПЕРЕДАЕТ" in event or "TRANSFERRED" in state or "ВОССТАНОВЛ" in event:
+                        transfer_events.append(log_entry)
+                
+                if transfer_events:
+                    output_lines.append(f"  • Зафиксировано событий передачи управления: {len(transfer_events)}")
+                    output_lines.append("  • (Детальные события передачи управления см. в хронологии ниже)")
+                    output_lines.append("")
+                
+                output_lines.append("  ПРОЦЕСС ПЕРЕДАЧИ УПРАВЛЕНИЯ И ДАННЫХ:")
+                output_lines.append("")
+                output_lines.append("  1. Временный лидер обнаруживает восстановление ЦБ (получен heartbeat)")
+                output_lines.append("  2. Временный лидер передает управление обратно ЦБ")
+                output_lines.append("")
+                
+                output_lines.append("  3. ФО ПЕРЕДАЕТ СФОРМИРОВАННЫЕ БЛОКИ В ЦБ:")
+                
+                # Ищем события передачи блоков от ФО
+                blocks_transfer = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    if ("BLOCKS_TRANSFER" in state or "передает сформированные блоки" in event) and "BANK" in actor.upper():
+                        blocks_transfer.append(log_entry)
+                
+                if transfer_events:
+                    output_lines.append(f"  • Зафиксировано событий передачи управления: {len(transfer_events)}")
+                    output_lines.append("  • (Детальные события передачи управления см. в хронологии ниже)")
+                    output_lines.append("")
+                
+                output_lines.append("  3. ФО ПЕРЕДАЕТ СФОРМИРОВАННЫЕ БЛОКИ В ЦБ:")
+                
+                # Ищем события передачи блоков от ФО
+                blocks_transfer = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    if ("BLOCKS_TRANSFER" in state or "передает сформированные блоки" in event) and "BANK" in actor.upper():
+                        blocks_transfer.append(log_entry)
+                
+                if blocks_transfer:
+                    output_lines.append(f"     • Зафиксировано событий передачи блоков: {len(blocks_transfer)}")
+                    output_lines.append("     • (Детальные события передачи блоков см. в хронологии ниже)")
+                else:
+                    output_lines.append("     • Временный лидер (ФО) передает все сформированные блоки в ЦБ")
+                    output_lines.append("     • ЦБ получает блоки, созданные временным лидером")
+                output_lines.append("")
+                
+                output_lines.append("  4. ЦБ ПРИНИМАЕТ БЛОКИ ОТ ВРЕМЕННОГО ЛИДЕРА:")
+                
+                # Ищем события приема блоков
+                blocks_reception = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    if ("ПРИЕМ" in event or "RECEPTION" in state or "BLOCKS_RECEPTION" in state) and "CBR" in actor.upper():
+                        blocks_reception.append(log_entry)
+                
+                if blocks_reception:
+                    output_lines.append(f"     • Зафиксировано событий приема блоков: {len(blocks_reception)}")
+                    output_lines.append("     • (Детальные события приема блоков см. в хронологии ниже)")
+                else:
+                    output_lines.append("     • ЦБ получает все блоки, созданные временным лидером")
+                    output_lines.append("     • ЦБ проверяет целостность и валидность принятых блоков")
+                    output_lines.append("     • ЦБ добавляет принятые блоки в свой блокчейн")
+                output_lines.append("")
+                
+                output_lines.append("  5. ЦБ ПРОИЗВОДИТ РЕПЛИКАЦИЮ ПРИНЯТЫХ БЛОКОВ:")
+                
+                # Ищем события репликации от ЦБ
+                cbr_replication = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    if ("РЕПЛИКАЦИЯ" in event or "REPLICATION" in state or "REPLICATION_START" in state) and "CBR" in actor.upper():
+                        cbr_replication.append(log_entry)
+                
+                if cbr_replication:
+                    output_lines.append(f"     • Зафиксировано событий репликации: {len(cbr_replication)}")
+                    output_lines.append("     • (Детальные события репликации см. в хронологии ниже)")
+                else:
+                    output_lines.append("     • ЦБ реплицирует принятые блоки на все узлы сети")
+                    output_lines.append("     • Все ФО получают обновленные блоки от ЦБ")
+                    output_lines.append("     • Синхронизация состояния всех узлов")
+                output_lines.append("")
+                
+                output_lines.append("  6. ЦБ ВОЗВРАЩАЕТСЯ В ШТАТНЫЙ РЕЖИМ РАБОТЫ:")
+                
+                # Ищем события возврата в штатный режим
+                normal_operation = []
+                for log_entry in all_logs:
+                    event = log_entry.get("event", "").upper()
+                    state = log_entry.get("state", "").upper()
+                    actor = log_entry.get("actor", "")
+                    
+                    if ("ШТАТНЫЙ" in event or "NORMAL_OPERATION" in state or "RESUMED" in state) and "CBR" in actor.upper():
+                        normal_operation.append(log_entry)
+                
+                if normal_operation:
+                    output_lines.append(f"     • Зафиксировано событий возврата в штатный режим: {len(normal_operation)}")
+                    output_lines.append("     • (Детальные события возврата в штатный режим см. в хронологии ниже)")
+                else:
+                    output_lines.append("     • ЦБ автоматически возвращается к роли лидера")
+                    output_lines.append("     • Временный лидер переходит в состояние FOLLOWER")
+                    output_lines.append("     • Система работает в штатном режиме")
+                    output_lines.append("     • ЦБ продолжает обработку транзакций и формирование блоков")
+                output_lines.append("")
+                
+                # Показываем информацию о синхронизированных блоках
+                try:
+                    # Получаем информацию о блоках, созданных временным лидером
+                    from database import DatabaseManager
+                    cbr_db = self.platform.db
+                    temp_leader_blocks = cbr_db.execute(
+                        """
+                        SELECT COUNT(*) as cnt FROM blocks 
+                        WHERE created_at > (
+                            SELECT MIN(created_at) FROM consensus_events 
+                            WHERE state = 'CBR_FAILURE_SIMULATED'
+                        )
+                        AND created_at < (
+                            SELECT MAX(created_at) FROM consensus_events 
+                            WHERE state = 'CBR_RECOVERED'
+                        )
+                        """,
+                        fetchone=True
+                    )
+                    if temp_leader_blocks and temp_leader_blocks.get("cnt", 0) > 0:
+                        output_lines.append(f"  Статистика синхронизации:")
+                        output_lines.append(f"    • Блоков, созданных временным лидером: {temp_leader_blocks['cnt']}")
+                        output_lines.append(f"    • Все блоки успешно переданы в ЦБ")
+                except Exception:
+                    pass
+                
+                output_lines.append("")
+                
+                # Все события в хронологическом порядке
+                output_lines.append("=" * 100)
+                output_lines.append("ХРОНОЛОГИЯ ВСЕХ СОБЫТИЙ")
+                output_lines.append("=" * 100)
+                for log_entry in all_logs:
+                    timestamp = log_entry.get("timestamp", "")
+                    actor = log_entry.get("actor", "")
+                    event_text = log_entry.get("event", "")
+                    state = log_entry.get("state", "")
+                    block_hash = log_entry.get("block_hash", "")
+                    output_lines.append(f"[{timestamp}] {actor} | {state} | {event_text} | Блок: {block_hash}")
+            
+            output_lines.append("")
+            output_lines.append("=" * 100)
+            output_lines.append("КОНЕЦ ЛОГОВ")
+            output_lines.append("=" * 100)
+            
+            # Экспортируем в файл
+            from datetime import datetime, timezone
+            filename = f"cbr_failure_recovery_log_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+            
+            from tkinter import filedialog
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")],
+                initialfile=filename,
+                title="Экспорт логов отказа ЦБ"
+            )
+            
+            if filepath:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(output_lines))
+                messagebox.showinfo(
+                    "Экспорт логов",
+                    f"Логи успешно экспортированы в файл:\n{filepath}"
+                )
+            # Если пользователь отменил, просто не сохраняем файл
+            
+        except Exception as exc:
+            messagebox.showerror("Ошибка", f"Не удалось экспортировать логи: {exc}")
 
     def _start_consensus_animation(self) -> None:
         """Запуск анимации по последнему раунду консенсуса."""
@@ -3174,36 +4100,46 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_anim_job = None
         stats = self.platform.consensus.stats()
         last_block = stats.get("last_block")
+        
+        # Если нет последнего блока, пытаемся получить последние события из всех блоков
         if not last_block or last_block == "-":
-            self._consensus_anim_events = []
-            self._consensus_anim_index = 0
-            self._consensus_active_actor = None
-            self._consensus_active_state = None
-            self._consensus_active_event = None
-            self._consensus_active_nodes = set()
-            self._ledger_active_height = None
-            self._refresh_consensus_canvas()
-            return
-        rows = self.platform.db.execute(
-            """
-            SELECT block_hash, event, actor, state, created_at
-            FROM consensus_events
-            WHERE block_hash = ?
-            AND state NOT IN ('CANDIDATE', 'ELECTION_START', 'LEADER_ELECTED', 'ELECTION_FAILED')
-            ORDER BY id ASC
-            """,
-            (last_block,),
-            fetchall=True,
-        )
-        # Фильтруем события выборов - ЦБ всегда лидер
-        filtered_events = []
-        for r in rows if rows else []:
-            event_dict = dict(r)
-            if event_dict.get("state") not in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
-                filtered_events.append(event_dict)
-        self._consensus_anim_events = filtered_events
+            # Получаем последние события консенсуса (для случаев после отказа ЦБ)
+            rows = self.platform.db.execute(
+                """
+                SELECT block_hash, event, actor, state, created_at
+                FROM consensus_events
+                ORDER BY id DESC
+                LIMIT 100
+                """,
+                fetchall=True,
+            )
+            if rows:
+                # Используем последний блок из событий
+                last_block = rows[-1]["block_hash"]
+                self._consensus_anim_events = [dict(r) for r in reversed(rows)]
+            else:
+                self._consensus_anim_events = []
+        else:
+            rows = self.platform.db.execute(
+                """
+                SELECT block_hash, event, actor, state, created_at
+                FROM consensus_events
+                WHERE block_hash = ?
+                ORDER BY id ASC
+                """,
+                (last_block,),
+                fetchall=True,
+            )
+            # Включаем все события, включая выборы
+            self._consensus_anim_events = [dict(r) for r in rows] if rows else []
+        
         self._consensus_anim_index = 0
+        self._consensus_active_actor = None
+        self._consensus_active_state = None
+        self._consensus_active_event = None
         self._consensus_active_nodes = set()
+        self._ledger_active_height = None
+        
         if self._consensus_anim_events:
             self._run_consensus_animation_step()
         else:
@@ -3223,7 +4159,10 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_votes = 0
             self._consensus_replications = 0
             nodes = self.platform.consensus.get_nodes()
-            self._consensus_total_banks = max(len(nodes) - 1, 1)
+            # ВАЖНО: При подсчете кворума ЦБ не учитывается
+            # Считаем только банки (ФО)
+            bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
+            self._consensus_total_banks = max(len(bank_nodes), 1)
             self._refresh_consensus_canvas()
             self._consensus_anim_job = None
             return
@@ -3235,10 +4174,63 @@ class DigitalRubleApp(tk.Tk):
         
         # Определяем активные узлы на текущем этапе
         self._consensus_active_nodes = set()
-        if event["state"] in {"SIGN_REQUEST", "VOTE_GRANTED", "REPLICATION", "APPEND_ENTRIES"}:
-            # На этапах запросов и репликации активен конкретный узел
+        
+        # ЭТАП ГОЛОСОВАНИЯ ЗА ПРИНЯТИЕ БЛОКА: ЦБ запрашивает голоса у всех узлов
+        if event["state"] in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
+            # Активны лидер (ЦБ) и все голосующие узлы
             if event["actor"] != self.platform.consensus.node_id:
                 self._consensus_active_nodes.add(event["actor"])
+            # ВАЖНО: Все банки должны участвовать в голосовании за принятие блока
+            # Добавляем все банки в активные узлы для визуализации
+            nodes = self.platform.consensus.get_nodes()
+            for node in nodes:
+                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
+                    self._consensus_active_nodes.add(node)
+        # ЭТАП ВЫБОРОВ ВРЕМЕННОГО ЛИДЕРА: активны кандидат и ВСЕ голосующие (все ФО участвуют)
+        elif event["state"] in {"ELECTION_START", "CANDIDATE"}:
+            # Кандидат активен
+            if event["actor"] != self.platform.consensus.node_id:
+                self._consensus_active_nodes.add(event["actor"])
+            # ВАЖНО: Все банки должны участвовать в голосовании
+            # Добавляем все банки в активные узлы для визуализации
+            nodes = self.platform.consensus.get_nodes()
+            for node in nodes:
+                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
+                    self._consensus_active_nodes.add(node)
+        elif event["state"] in {"VOTE_GRANTED", "VOTE_DENIED"}:
+            # Проверяем, это голосование за принятие блока или выборы лидера
+            # Если это не ELECTION_START/CANDIDATE, то это голосование за принятие блока
+            is_election = any(e["state"] in {"ELECTION_START", "CANDIDATE"} 
+                            for e in self._consensus_anim_events[:self._consensus_anim_index])
+            if not is_election:
+                # Это голосование за принятие блока
+                if event["actor"] != self.platform.consensus.node_id:
+                    self._consensus_active_nodes.add(event["actor"])
+                # ВАЖНО: Все банки должны участвовать в голосовании за принятие блока
+                nodes = self.platform.consensus.get_nodes()
+                for node in nodes:
+                    if "BANK" in node.upper() and node != self.platform.consensus.node_id:
+                        self._consensus_active_nodes.add(node)
+            # Кандидат активен
+            if event["actor"] != self.platform.consensus.node_id:
+                self._consensus_active_nodes.add(event["actor"])
+            # ВАЖНО: Все банки должны участвовать в голосовании
+            # Добавляем все банки в активные узлы для визуализации
+            nodes = self.platform.consensus.get_nodes()
+            for node in nodes:
+                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
+                    self._consensus_active_nodes.add(node)
+        # ЭТАП РЕПЛИКАЦИИ: активен лидер и ВСЕ получатели (все ФО участвуют)
+        elif event["state"] in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND"}:
+            # На этапах репликации активен конкретный узел-получатель
+            if event["actor"] != self.platform.consensus.node_id:
+                self._consensus_active_nodes.add(event["actor"])
+            # ВАЖНО: Все банки должны участвовать в репликации
+            # Добавляем все банки в активные узлы для визуализации
+            nodes = self.platform.consensus.get_nodes()
+            for node in nodes:
+                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
+                    self._consensus_active_nodes.add(node)
         elif event["state"] == "COMMITTED":
             # На этапе фиксации активны все узлы
             nodes = self.platform.consensus.get_nodes()
@@ -3250,10 +4242,23 @@ class DigitalRubleApp(tk.Tk):
         else:
             self._ledger_active_height = None
         seen = self._consensus_anim_events[: self._consensus_anim_index + 1]
-        self._consensus_votes = sum(1 for e in seen if e["state"] == "VOTE_GRANTED")
-        self._consensus_replications = sum(1 for e in seen if e["state"] == "REPLICATION")
         nodes = self.platform.consensus.get_nodes()
-        self._consensus_total_banks = max(len(nodes) - 1, 1)
+        # ВАЖНО: При подсчете кворума ЦБ не учитывается
+        # Считаем только банки (ФО)
+        bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
+        cbr_nodes = [n for n in nodes if "CBR" in n.upper() or (hasattr(self.platform.consensus, 'is_central_bank') and self.platform.consensus.is_central_bank)]
+        
+        # Подсчитываем голоса за принятие блока и выборы временного лидера
+        # ВАЖНО: При подсчете голосов за принятие блока учитываем только голоса от ФО (не ЦБ)
+        vote_events = [e for e in seen if e["state"] in {"VOTE_GRANTED", "QUORUM_REACHED"}]
+        # Фильтруем голоса: исключаем голос ЦБ
+        self._consensus_votes = sum(1 for e in vote_events 
+                                    if e.get("actor") not in cbr_nodes and 
+                                    (e.get("actor") in bank_nodes or "BANK" in str(e.get("actor", "")).upper()))
+        
+        # Подсчитываем подтверждения репликации
+        self._consensus_replications = sum(1 for e in seen if e["state"] in {"REPLICATION", "COMMITTED"})
+        self._consensus_total_banks = max(len(bank_nodes), 1)
         self._refresh_consensus_canvas()
         self._consensus_anim_index = (self._consensus_anim_index + 1) % len(
             self._consensus_anim_events
@@ -3487,7 +4492,8 @@ class DigitalRubleApp(tk.Tk):
                 )
                 return
             
-            # Получаем все транзакции банка
+            # Получаем все транзакции из БД ЦБ (там хранятся все транзакции)
+            # Фильтруем по bank_id транзакции
             all_transactions = self.platform.get_transactions(bank_id=bank_id)
             
             # Группируем транзакции по клиентам и считаем статистику
@@ -3497,10 +4503,41 @@ class DigitalRubleApp(tk.Tk):
                 user_type = self._user_type_label(user["user_type"])
                 
                 # Транзакции, где пользователь был отправителем или получателем
+                # ВАЖНО: Ищем транзакции где пользователь участвует (отправитель ИЛИ получатель)
                 user_txs = [
                     tx for tx in all_transactions 
-                    if tx.get("sender_id") == user_id or tx.get("receiver_id") == user_id
+                    if (tx.get("sender_id") == user_id or tx.get("receiver_id") == user_id)
                 ]
+                
+                # Дополнительно проверяем транзакции в БД банка (реплицированные)
+                try:
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(f"bank_{bank_id}.db")
+                    # Получаем транзакции из БД банка, где пользователь участвует
+                    bank_tx_rows = bank_db.execute(
+                        """
+                        SELECT DISTINCT t.id 
+                        FROM transactions t
+                        WHERE (t.sender_id = ? OR t.receiver_id = ?)
+                        """,
+                        (user_id, user_id),
+                        fetchall=True
+                    )
+                    # Добавляем транзакции, которых нет в основном списке
+                    existing_tx_ids = {tx.get("id") for tx in user_txs}
+                    for row in bank_tx_rows:
+                        if row["id"] not in existing_tx_ids:
+                            # Получаем полную информацию о транзакции из БД банка
+                            tx_row = bank_db.execute(
+                                "SELECT * FROM transactions WHERE id = ?",
+                                (row["id"],),
+                                fetchone=True
+                            )
+                            if tx_row:
+                                user_txs.append(dict(tx_row))
+                except Exception as e:
+                    # Если не удалось получить данные из БД банка, используем только основной список
+                    pass
                 
                 tx_count = len(user_txs)
                 
