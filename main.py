@@ -12,7 +12,7 @@ from platform import DigitalRublePlatform, _hash_str
 class DigitalRubleApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Имитационная модель цифрового рубля")
+        self.title("Имитационная модель платформы цифрового рубля")
         self.geometry("1600x900")
 
         default_font = tkfont.nametofont("TkDefaultFont")
@@ -4725,6 +4725,37 @@ class DigitalRubleApp(tk.Tk):
                 tx for tx in all_transactions 
                 if tx.get("sender_id") == client_id or tx.get("receiver_id") == client_id
             ]
+            
+            # Дополнительно проверяем транзакции в БД банка (реплицированные)
+            # Это необходимо, так как во вкладке ФО показываются все транзакции из БД банка
+            try:
+                from database import DatabaseManager
+                bank_db = DatabaseManager(f"bank_{bank_id}.db")
+                # Получаем транзакции из БД банка, где пользователь участвует
+                bank_tx_rows = bank_db.execute(
+                    """
+                    SELECT DISTINCT t.id 
+                    FROM transactions t
+                    WHERE (t.sender_id = ? OR t.receiver_id = ?)
+                    """,
+                    (client_id, client_id),
+                    fetchall=True
+                )
+                # Добавляем транзакции, которых нет в основном списке
+                existing_tx_ids = {tx.get("id") for tx in client_transactions}
+                for row in bank_tx_rows:
+                    if row["id"] not in existing_tx_ids:
+                        # Получаем полную информацию о транзакции из БД банка
+                        tx_row = bank_db.execute(
+                            "SELECT * FROM transactions WHERE id = ?",
+                            (row["id"],),
+                            fetchone=True
+                        )
+                        if tx_row:
+                            client_transactions.append(dict(tx_row))
+            except Exception as e:
+                # Если не удалось получить данные из БД банка, используем только основной список
+                pass
             
             if not client_transactions:
                 messagebox.showinfo("Экспорт", f"У клиента {client['name']} нет транзакций")
