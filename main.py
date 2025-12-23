@@ -78,13 +78,13 @@ class DigitalRubleApp(tk.Tk):
         self._consensus_votes = None
         self._consensus_replications = None
         self._consensus_total_banks = None
-        self._consensus_active_nodes = set()  # Активные узлы на текущем этапе
+        self._consensus_active_nodes = set()
         self._ledger_last_rows = []
         self._ledger_active_height = None
-        self._zoom_factor = 1.0  # Текущий масштаб (1.0 = 100%)
-        self._base_font_size = 11  # Базовый размер шрифта
-        self._base_heading_font_size = 12  # Базовый размер шрифта заголовков
-        self._text_zoom_factors = {}  # Отдельные масштабы для Text виджетов журналов
+        self._zoom_factor = 1.0
+        self._base_font_size = 11
+        self._base_heading_font_size = 12
+        self._text_zoom_factors = {}
 
     def _user_type_label(self, code: str) -> str:
         mapping = {
@@ -107,7 +107,7 @@ class DigitalRubleApp(tk.Tk):
             elif delta < 0:
                 self._zoom_factor = max(self._zoom_factor / 1.1, 0.5)
             else:
-                return  # Нет изменения
+                return
             
             self._apply_zoom()
             return "break"
@@ -327,12 +327,21 @@ class DigitalRubleApp(tk.Tk):
         gov_entry.grid(row=0, column=5, padx=5, pady=5)
         self._add_entry_menu(gov_entry)
 
+        ttk.Label(controls, text="Финансовые организации:").grid(row=0, column=6, padx=5, pady=5)
+        fo_entry = ttk.Entry(controls, width=5)
+        fo_entry.insert(0, "4")
+        fo_entry.grid(row=0, column=7, padx=5, pady=5)
+        self._add_entry_menu(fo_entry)
+
         def seed_entities() -> None:
             try:
-                banks = self.platform.list_banks()
-                if not banks:
-                    messagebox.showerror("Ошибка", "Банки не инициализированы. Перезапустите приложение.")
-                    return
+                fo_count = int(fo_entry.get())
+                if fo_count > 0:
+                    self.platform.create_banks(fo_count)
+                    banks = self.platform.list_banks()
+                    if not banks:
+                        messagebox.showerror("Ошибка", "Не удалось создать банки")
+                        return
                 
                 self.platform.create_users(int(fl_entry.get()), "INDIVIDUAL")
                 self.platform.create_users(int(yl_entry.get()), "BUSINESS")
@@ -350,8 +359,7 @@ class DigitalRubleApp(tk.Tk):
             if not messagebox.askyesno(
                 "Сброс модели",
                 "Вы уверены, что хотите полностью очистить все данные модели?\n"
-                "Будут удалены пользователи, транзакции, смарт‑контракты и журналы.\n"
-                "Банки (ФО) останутся в системе как инфраструктура.",
+                "Будут удалены пользователи, ФО, транзакции, смарт‑контракты и журналы.\n",
             ):
                 return
             try:
@@ -395,13 +403,6 @@ class DigitalRubleApp(tk.Tk):
         )
         self.wallet_user_combo = ttk.Combobox(wallet_frame, state="readonly", width=FIELD_WIDTH//10)
         self.wallet_user_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.wallet_user_combo.bind("<<ComboboxSelected>>", self._on_wallet_user_change)
-
-        ttk.Label(wallet_frame, text="Банк (ФО):", width=LABEL_WIDTH//10).grid(
-            row=1, column=0, padx=5, pady=5, sticky="w"
-        )
-        self.wallet_bank_combo = ttk.Combobox(wallet_frame, state="readonly", width=FIELD_WIDTH//10)
-        self.wallet_bank_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
 
         ttk.Button(wallet_frame, text="Открыть кошелек", command=self._ui_open_wallet).grid(
             row=0, column=2, padx=5, pady=5, sticky="ew"
@@ -578,9 +579,6 @@ class DigitalRubleApp(tk.Tk):
         ttk.Button(
             contract_frame, text="Создать смарт-контракт", command=self._ui_create_contract
         ).grid(row=7, column=0, columnspan=2, pady=10, sticky="ew")
-        ttk.Button(
-            contract_frame, text="Исполнить запланированные", command=self._ui_run_contracts
-        ).grid(row=8, column=0, columnspan=2, pady=5, sticky="ew")
 
     def _build_bank_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -623,7 +621,7 @@ class DigitalRubleApp(tk.Tk):
         tab.rowconfigure(3, weight=1)
         self.bank_tx_table = self._make_table(
             table_frame,
-            ["Клиент", "Тип", "Количество транзакций", "Преобладающий тип"],
+            ["ID", "Клиент", "Тип", "Количество транзакций", "Преобладающий тип"],
             stretch=True,
         )
         self.bank_tx_table.bind("<Double-1>", self._on_bank_client_row_double_click)
@@ -697,7 +695,7 @@ class DigitalRubleApp(tk.Tk):
         self.cbr_log.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
         tab.rowconfigure(4, weight=1)
         self._add_copy_menu(self.cbr_log)
-        self._setup_text_zoom(self.cbr_log)  # Добавляем масштабирование для журнала ЦБ
+        self._setup_text_zoom(self.cbr_log)
 
     def _build_user_data_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -772,38 +770,65 @@ class DigitalRubleApp(tk.Tk):
         ttk.Button(tab, text="Обновить данные", command=self.refresh_all).grid(
             row=1, column=0, pady=5
         )
+        ttk.Button(
+            tab, text="Исполнить запланированные", command=self._ui_run_contracts
+        ).grid(row=2, column=0, pady=5, sticky="ew")
 
     def _build_consensus_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Консенсус")
         tab.columnconfigure(0, weight=1)
-        tab.columnconfigure(1, weight=1)
-        tab.rowconfigure(0, weight=0)
-        tab.rowconfigure(1, weight=0)
-        tab.rowconfigure(2, weight=1)
+        tab.rowconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
 
-        self.consensus_canvas = tk.Canvas(tab, height=280, bg="white")
-        self.consensus_canvas.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        canvas_frame = ttk.Frame(tab)
+        canvas_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        canvas_frame.columnconfigure(0, weight=1)
+        canvas_frame.rowconfigure(0, weight=0)
+        
+        self.consensus_canvas = tk.Canvas(canvas_frame, height=300, bg="white")
+        self.consensus_canvas.grid(row=0, column=0, sticky="ew")
 
-        self.ledger_canvas = tk.Canvas(tab, height=180, bg="white")
-        self.ledger_canvas.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+        self.ledger_canvas = None
 
-        ttk.Label(tab, text="События консенсуса", font=("TkDefaultFont", 11, "bold")).grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 5)
+        bottom_frame = ttk.Frame(tab)
+        bottom_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        bottom_frame.columnconfigure(0, weight=1)
+        bottom_frame.rowconfigure(1, weight=1)
+        
+        ttk.Label(bottom_frame, text="События консенсуса", font=("TkDefaultFont", 11, "bold")).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(0, 5)
         )
         columns = ["Блок/Транзакция", "Событие", "Узел", "Состояние", "Время"]
-        self.consensus_table = self._make_table(tab, columns, row=3, column=0, columnspan=2, stretch=True)
+        self.consensus_table = self._make_table(bottom_frame, columns, row=1, column=0, stretch=True)
 
-        btn_frame = ttk.Frame(tab)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=5)
+        def clear_consensus_events() -> None:
+            try:
+                self.platform.db.execute("DELETE FROM consensus_events")
+                if self.consensus_table:
+                    self._clear_tree(self.consensus_table)
+                messagebox.showinfo("Очистка", "Информация о событиях консенсуса очищена")
+            except Exception as exc:
+                messagebox.showerror("Ошибка", str(exc))
+
+        clear_btn_frame = ttk.Frame(bottom_frame)
+        clear_btn_frame.grid(row=2, column=0, pady=5)
+        ttk.Button(
+            clear_btn_frame,
+            text="Очистить информацию о событиях",
+            command=clear_consensus_events,
+        ).pack(side=tk.LEFT, padx=5)
+
+        btn_frame = ttk.Frame(bottom_frame)
+        btn_frame.grid(row=3, column=0, pady=5)
         ttk.Button(
             btn_frame,
             text="Обновить визуализацию",
             command=self._ui_refresh_consensus,
         ).pack(side=tk.LEFT, padx=5)
         
-        simulation_frame = ttk.LabelFrame(tab, text="Имитация отказа ЦБ")
-        simulation_frame.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=5)
+        simulation_frame = ttk.LabelFrame(bottom_frame, text="Имитация отказа ЦБ")
+        simulation_frame.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
         
         ttk.Button(
             simulation_frame,
@@ -899,7 +924,7 @@ class DigitalRubleApp(tk.Tk):
         self.activity_text.grid(row=0, column=0, sticky="nsew")
         y_scroll.config(command=self.activity_text.yview)
         self._add_copy_menu(self.activity_text)
-        self._setup_text_zoom(self.activity_text)  # Добавляем масштабирование для журнала активности
+        self._setup_text_zoom(self.activity_text)
         self.errors_table = None
 
     def _on_tx_row_double_click(self, event) -> None:
@@ -1050,7 +1075,7 @@ class DigitalRubleApp(tk.Tk):
         banks = self.platform.list_banks()
         for bank in banks:
             lines.append(f"    • {bank['name']} (ФО): блок присутствует ✓")
-        total_nodes = 1 + len(banks)  # ЦБ + все ФО
+        total_nodes = 1 + len(banks)
         lines.append(f"  Всего узлов с блоком: {total_nodes}/{total_nodes}")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
@@ -1237,7 +1262,7 @@ class DigitalRubleApp(tk.Tk):
         banks = self.platform.list_banks()
         for bank in banks:
             lines.append(f"    • {bank['name']} (ФО): блок присутствует ✓")
-        total_nodes = 1 + len(banks)  # ЦБ + все ФО
+        total_nodes = 1 + len(banks)
         lines.append(f"  Всего узлов с блоком: {total_nodes}/{total_nodes}")
         lines.append("")
         lines.append("ЭТАП 10: ФИНАЛИЗАЦИЯ")
@@ -1436,6 +1461,10 @@ class DigitalRubleApp(tk.Tk):
             "next_execution": sc["next_execution"],
             "last_tx_id": sc.get("last_tx_id"),
         }
+        if sc.get("status") == "FAILED":
+            lines.append("")
+            lines.append("Ошибка: недостаточно ЦР на балансе")
+        
         self._show_steps_window(
             "Этапы работы смарт‑контракта",
             lines,
@@ -1489,7 +1518,7 @@ class DigitalRubleApp(tk.Tk):
         lines.append("    • Отбираются транзакции, ещё не включённые в блоки")
         if txs:
             lines.append("  Включённые транзакции:")
-            for t in txs[:10]:  # Показываем первые 10
+            for t in txs[:10]:
                 lines.append(
                     f"    • TX {t['id']} | тип={t['tx_type']} | сумма={t['amount']:.2f} | банк_id={t['bank_id']}"
                 )
@@ -1576,7 +1605,7 @@ class DigitalRubleApp(tk.Tk):
         lines.append("       • Каждый узел применяет запись: ENTRY_APPLIED")
         if events_for_block:
             lines.append("  События консенсуса для этого блока:")
-            for e in events_for_block[:10]:  # Показываем первые 10
+            for e in events_for_block[:10]:
                 lines.append(
                     f"    [{e.created_at}] {e.actor}: {self._translate_consensus_state(e.state)} — {e.event}"
                 )
@@ -1772,8 +1801,8 @@ class DigitalRubleApp(tk.Tk):
             "LEADER": "Лидер (ЦБ РФ)",
             "FOLLOWER": "Последователь",
             "SIGN_REQUEST": "Запрос подписи",
+            "VOTE_REQUEST": "Запрос подтверждения корректности блока",
             "VOTE_GRANTED": "Голос получен",
-            "VOTE_DENIED": "Голос отклонен",
             "APPEND_ENTRIES": "Добавление записей",
             "ENTRY_APPLIED": "Запись применена",
             "REPLICATION": "Репликация",
@@ -1782,9 +1811,14 @@ class DigitalRubleApp(tk.Tk):
             "TX": "Транзакция",
             "LAG": "Задержка",
             "FAULT": "Ошибка",
+            "CBR_RECOVERED": "Отказ ЦБ",
+            "NORMAL_OPERATION_RESUMED": "ЦБ вернулся в штатный режим работы",
+            "REPLICATION_START": "старт репликации",
+            "BLOCKS_RECEPTION_START": "Спинятие данных от временного лидера",
+            "QUORUM_REACHED": "Кворум достигнут",
         }
         if state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
-            return "Лидер (ЦБ РФ)"  # Всегда показываем как лидер
+            return "Лидер (ЦБ РФ)"
         return mapping.get(state, state)
 
     def _add_copy_menu(self, widget) -> None:
@@ -1832,8 +1866,8 @@ class DigitalRubleApp(tk.Tk):
             finally:
                 menu.grab_release()
         
-        widget.bind("<Button-3>", show_menu)  # Правая кнопка мыши
-        widget.bind("<Control-c>", lambda e: copy_text())  # Ctrl+C
+        widget.bind("<Button-3>", show_menu)
+        widget.bind("<Control-c>", lambda e: copy_text())
 
     def _add_entry_menu(self, widget) -> None:
         def copy_text(event=None):
@@ -1845,7 +1879,7 @@ class DigitalRubleApp(tk.Tk):
                 if text:
                     self.clipboard_clear()
                     self.clipboard_append(text)
-                return "break"  # Предотвращаем стандартную обработку
+                return "break"
             except Exception as e:
                 print(f"Ошибка при копировании: {e}")
                 return "break"
@@ -1857,7 +1891,7 @@ class DigitalRubleApp(tk.Tk):
                     self.clipboard_clear()
                     self.clipboard_append(text)
                     widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                return "break"  # Предотвращаем стандартную обработку
+                return "break"
             except Exception as e:
                 print(f"Ошибка при вырезании: {e}")
                 return "break"
@@ -1869,7 +1903,7 @@ class DigitalRubleApp(tk.Tk):
                     if widget.selection_present():
                         widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
                     widget.insert(tk.INSERT, text)
-                return "break"  # Предотвращаем стандартную обработку
+                return "break"
             except Exception as e:
                 print(f"Ошибка при вставке: {e}")
                 return "break"
@@ -1877,7 +1911,7 @@ class DigitalRubleApp(tk.Tk):
         def select_all(event=None):
             widget.select_range(0, tk.END)
             widget.icursor(tk.END)
-            return "break"  # Предотвращаем стандартную обработку
+            return "break"
         
         def show_menu(event):
             menu = tk.Menu(self, tearoff=0)
@@ -1891,11 +1925,11 @@ class DigitalRubleApp(tk.Tk):
             finally:
                 menu.grab_release()
         
-        widget.bind("<Button-3>", show_menu)  # Правая кнопка мыши
-        widget.bind("<Control-c>", copy_text)  # Ctrl+C
-        widget.bind("<Control-x>", cut_text)  # Ctrl+X
-        widget.bind("<Control-v>", paste_text)  # Ctrl+V
-        widget.bind("<Control-a>", select_all)  # Ctrl+A
+        widget.bind("<Button-3>", show_menu)
+        widget.bind("<Control-c>", copy_text)
+        widget.bind("<Control-x>", cut_text)
+        widget.bind("<Control-v>", paste_text)
+        widget.bind("<Control-a>", select_all)
 
     def _make_table(
         self,
@@ -1997,7 +2031,7 @@ class DigitalRubleApp(tk.Tk):
                 self.contract_receiver_combo.current(0)
         banks = self.platform.list_banks()
         bank_values = [f"{b['id']} | {b['name']}" for b in banks]
-        for combo in [self.bank_combo, self.contract_bank_combo, self.bank_filter_combo, self.online_bank_combo, self.offline_bank_combo, self.wallet_bank_combo]:
+        for combo in [self.bank_combo, self.contract_bank_combo, self.bank_filter_combo, self.online_bank_combo, self.offline_bank_combo]:
             if combo:
                 old = combo.get()
                 combo["values"] = bank_values
@@ -2014,30 +2048,7 @@ class DigitalRubleApp(tk.Tk):
                 tree.delete(item)
 
     def _on_wallet_user_change(self, event=None) -> None:
-        try:
-            if not self.wallet_user_combo or not self.wallet_bank_combo:
-                return
-            user_value = self.wallet_user_combo.get()
-            if not user_value:
-                return
-            user_id = self._selected_id(user_value)
-            user = self.platform.get_user(user_id)
-            bank_id = user.get("bank_id")
-            if not bank_id:
-                return
-            banks = self.platform.list_banks()
-            bank_value = next(
-                (f"{b['id']} | {b['name']}" for b in banks if b["id"] == bank_id),
-                None,
-            )
-            if bank_value:
-                values = list(self.wallet_bank_combo["values"]) if self.wallet_bank_combo["values"] else []
-                if bank_value not in values:
-                    values.append(bank_value)
-                    self.wallet_bank_combo["values"] = values
-                self.wallet_bank_combo.set(bank_value)
-        except Exception:
-            pass
+        pass
 
     def _refresh_tables(self) -> None:
         if self.user_table:
@@ -2292,28 +2303,153 @@ class DigitalRubleApp(tk.Tk):
         if self.consensus_table:
             self._clear_tree(self.consensus_table)
             events = self.platform.consensus.get_recent_events(limit=100)
+            
+            blocks_dict = {}
             for event in events:
                 if event.state in {"CANDIDATE", "ELECTION_START", "LEADER_ELECTED", "ELECTION_FAILED"}:
                     continue
                 
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(event.created_at.replace('Z', '+00:00'))
-                    time_str = dt.strftime("%H:%M:%S")
-                except:
-                    time_str = event.created_at[-8:] if len(event.created_at) >= 8 else event.created_at
+                block_hash = event.block_hash
+                if block_hash not in blocks_dict:
+                    blocks_dict[block_hash] = []
+                blocks_dict[block_hash].append(event)
+            
+            stage_order = {
+                "APPEND_ENTRIES": 1,
+                "LEADER_APPEND": 1,
+                "VOTE_REQUEST": 2,
+                "VOTE_GRANTED": 2,
+                "QUORUM_REACHED": 2,
+                "REPLICATION": 3,
+                "COMMITTED": 6,
+            }
+            
+            nodes = self.platform.consensus.get_nodes()
+            all_bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
+            
+            for block_hash, block_events in blocks_dict.items():
+                stages_found = {}
+                entry_applied_events = []
                 
-                self.consensus_table.insert(
-                    "",
-                    tk.END,
-                    values=(
-                        event.block_hash[:16] + "...",
-                        event.event,
-                        event.actor,
-                        self._translate_consensus_state(event.state),
-                        time_str,
-                    ),
-                )
+                for event in block_events:
+                    if event.state == "ENTRY_APPLIED":
+                        entry_applied_events.append(event)
+                    else:
+                        stage_num = stage_order.get(event.state)
+                        if stage_num is None:
+                            continue
+                        if stage_num not in stages_found:
+                            stages_found[stage_num] = []
+                        stages_found[stage_num].append(event)
+                
+                if entry_applied_events:
+                    half = len(entry_applied_events) // 2
+                    for idx, event in enumerate(entry_applied_events):
+                        stage_num = 4 if idx < half else 5
+                        if stage_num not in stages_found:
+                            stages_found[stage_num] = []
+                        stages_found[stage_num].append(event)
+                
+                for stage_num in sorted(stages_found.keys()):
+                    stage_events = stages_found[stage_num]
+                    if stage_num == 1:
+                        stage_name = "1 ЭТАП Рассылка блока от ЦБ к ФО для верификации"
+                    elif stage_num == 2:
+                        stage_name = "2 ЭТАП Голосования за принятие блока (подтверждение от ФО)"
+                    elif stage_num == 3:
+                        stage_name = "3 ЭТАП Репликация подтвержденного блока от ЦБ к ФО"
+                        stage_events = [e for e in stage_events if e.state == "REPLICATION"]
+                    elif stage_num == 4:
+                        stage_name = "4 ЭТАП Сохранение блока в локальных хранилищах ФО"
+                    elif stage_num == 5:
+                        stage_name = "5 ЭТАП Подтверждение от ФО к ЦБ об успешной репликации"
+                    elif stage_num == 6:
+                        stage_name = "6 ЭТАП Фиксация успешной репликации в ЦБ"
+                    else:
+                        continue
+                    
+                    stage_details = []
+                    if stage_num == 1:
+                        for bank_node in all_bank_nodes:
+                            stage_details.append(f"ЦБ → {bank_node}: рассылка блока")
+                    elif stage_num == 2:
+                        vote_requests = [e for e in stage_events if e.state == "VOTE_REQUEST"]
+                        if vote_requests:
+                            stage_details.append(f"ЦБ - ФО: запрос подтверждения корректности блока")
+                        for bank_node in all_bank_nodes:
+                            stage_details.append(f"{bank_node} - ЦБ: подтверждение получено")
+                        stage_details.append(f"ЦБ: кворум достигнут ({len(all_bank_nodes)}/{len(all_bank_nodes)})")
+                        stage_details.append(f"Кворум достигнут: {len(all_bank_nodes)} голосов за принятие блока (нужно более 3/4)")
+                    elif stage_num == 3:
+                        for bank_node in all_bank_nodes:
+                            stage_details.append(f"ЦБ → {bank_node}: репликация блока")
+                    elif stage_num == 4:
+                        for bank_node in all_bank_nodes:
+                            stage_details.append(f"{bank_node}: блок сохранен в локальном хранилище")
+                    elif stage_num == 5:
+                        for bank_node in all_bank_nodes:
+                            stage_details.append(f"{bank_node} → ЦБ: подтверждение успешной репликации")
+                    elif stage_num == 6:
+                        for event in stage_events:
+                            if event.state == "COMMITTED":
+                                stage_details.append(f"ЦБ: репликация зафиксирована")
+                    
+                    self.consensus_table.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            block_hash[:16] + "...",
+                            stage_name,
+                            "-",
+                            "-",
+                            "-",
+                        ),
+                    )
+                    
+                    for detail in stage_details:
+                        self.consensus_table.insert(
+                            "",
+                            tk.END,
+                            values=(
+                                "",
+                                detail,
+                                "-",
+                                "-",
+                                "-",
+                            ),
+                        )
+                    
+                    filtered_stage_events = stage_events
+                    if stage_num == 3:
+                        filtered_stage_events = [e for e in stage_events if e.state == "REPLICATION"]
+                    elif stage_num == 4:
+                        filtered_stage_events = []
+                    elif stage_num == 5:
+                        filtered_stage_events = []
+                    
+                    for event in filtered_stage_events:
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(event.created_at.replace('Z', '+00:00'))
+                            time_str = dt.strftime("%H:%M:%S")
+                        except:
+                            time_str = event.created_at[-8:] if len(event.created_at) >= 8 else event.created_at
+                        
+                        actor_name = event.actor
+                        if "CBR" in actor_name.upper() or actor_name == "CBR_0":
+                            actor_name = "ЦБ"
+                        
+                        self.consensus_table.insert(
+                            "",
+                            tk.END,
+                            values=(
+                                "",
+                                event.event,
+                                actor_name,
+                                self._translate_consensus_state(event.state),
+                                time_str,
+                            ),
+                        )
         
         if self.consensus_canvas and self._consensus_anim_job is None:
             self._start_consensus_animation()
@@ -2780,474 +2916,268 @@ class DigitalRubleApp(tk.Tk):
             if not canvas:
                 return
             canvas.delete("all")
+            width = int(canvas.winfo_width() or 1200)
+            
+            blocks_count = self.platform.db.execute(
+                "SELECT COUNT(*) as count FROM blocks WHERE height > 0",
+                fetchone=True
+            )
+            has_transactions = blocks_count and blocks_count["count"] > 0
+            
+            if not has_transactions:
+                canvas.create_text(
+                    width // 2,
+                    140,
+                    text="Создайте первую транзакцию, чтобы увидеть визуализацию консенсуса.",
+                    fill="gray",
+                    font=("TkDefaultFont", 10),
+                )
+                return
+            
             nodes = self.platform.consensus.get_nodes()
             if not nodes or len(nodes) == 0:
                 canvas.create_text(
-                    200,
-                    80,
+                    width // 2,
+                    140,
                     text="Нет узлов. Добавьте банки, чтобы увидеть визуализацию консенсуса.",
                     fill="gray",
+                    font=("TkDefaultFont", 10),
                 )
                 return
-            width = int(canvas.winfo_width() or 1200)
             
             cbr_nodes = [n for n in nodes if "CBR" in n.upper() or "ЦБ" in n.upper()]
             bank_nodes = [n for n in nodes if "BANK" in n.upper() and n not in cbr_nodes]
             
-            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
-            active_actor = self._consensus_active_actor if hasattr(self, '_consensus_active_actor') else None
+            if not cbr_nodes:
+                canvas.create_text(
+                    width // 2,
+                    140,
+                    text="ЦБ не найден.",
+                    fill="gray",
+                    font=("TkDefaultFont", 10),
+                )
+                return
             
-            temp_leader = None
-            if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
-                for event in reversed(self._consensus_anim_events[:self._consensus_anim_index + 1]):
-                    if event.get("state") in {"LEADER_ELECTED", "LEADER_APPEND", "LEADER"}:
-                        actor = event.get("actor", "")
-                        if actor and "BANK" in actor.upper():
-                            temp_leader = actor
-                            break
+            current_stage = getattr(self, "_forced_consensus_stage", None) or self._determine_current_stage()
+            stage_name = self._get_stage_name(current_stage)
             
-            leader = None
-            if cbr_nodes:
-                cbr_failed = False
-                if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
-                    for event in self._consensus_anim_events[:self._consensus_anim_index + 1]:
-                        if event.get("state") == "CBR_FAILURE_SIMULATED":
-                            cbr_failed = True
-                            break
-                
-                if not cbr_failed:
-                    leader = cbr_nodes[0]
-            
-            if not leader:
-                if temp_leader and temp_leader in bank_nodes:
-                    leader = temp_leader
-                    bank_nodes = [n for n in bank_nodes if n != temp_leader]
-                elif active_actor and "BANK" in active_actor.upper() and current_state in {"LEADER", "LEADER_APPEND"}:
-                    leader = active_actor
-                    bank_nodes = [n for n in bank_nodes if n != active_actor]
-                elif bank_nodes:
-                    leader = bank_nodes[0]
-                    bank_nodes = bank_nodes[1:]
-
-            active_actor = self._consensus_active_actor
-            if active_actor is None:
-                recent_events = self.platform.consensus.get_recent_events(limit=1)
-                active_actor = recent_events[0].actor if recent_events and len(recent_events) > 0 else None
-
             leader_x = width // 2
-            leader_y = 80
+            leader_y = 90
+            y_banks = 260
             
-            leader_fill = "#10b981"
-            leader_label = "Нет лидера"
-            
-            if leader:
-                is_cbr = "CBR" in leader.upper() or "ЦБ" in leader.upper()
-                
-                if is_cbr:
-                    leader_fill = "#10b981"
-                    leader_label = "ЦБ РФ"
-                else:
-                    leader_fill = "#10b981"
-                    leader_label = leader
-                
+            node_radius = 40
             canvas.create_oval(
-                leader_x - 45, leader_y - 45, leader_x + 45, leader_y + 45, 
-                fill=leader_fill, outline="#0f172a", width=2
+                leader_x - node_radius, leader_y - node_radius, leader_x + node_radius, leader_y + node_radius, 
+                fill="#10b981", outline="#0f172a", width=2
             )
-            canvas.create_text(leader_x, leader_y, text=leader_label, fill="black", width=140, font=("TkDefaultFont", 9, "bold"))
-
-            if bank_nodes:
-                min_spacing = 120
-                calculated_spacing = width // (len(bank_nodes) + 1)
-                spacing = max(calculated_spacing, min_spacing)
-                if spacing < min_spacing:
-                    spacing = min_spacing
-                y_banks = 200
+            canvas.create_text(leader_x, leader_y, text="ЦБ РФ", fill="black", width=100, font=("TkDefaultFont", 8, "bold"))
             
-            active_nodes = self._consensus_active_nodes if hasattr(self, '_consensus_active_nodes') else set()
-            if active_actor and active_actor != leader and active_actor in bank_nodes:
-                if "CBR" not in active_actor.upper() and "ЦБ" not in active_actor.upper():
-                    active_nodes.add(active_actor)
+            if current_stage > 0:
+                canvas.create_text(
+                    leader_x,
+                    leader_y - 60,
+                    text=stage_name,
+                    fill="#1f2937",
+                    font=("TkDefaultFont", 9, "bold")
+                )
             
-            candidate_node = None
-            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
-            if current_state in {"ELECTION_START", "CANDIDATE", "VOTE_GRANTED", "VOTE_DENIED"}:
-                if active_actor and "BANK" in active_actor.upper() and current_state in {"ELECTION_START", "CANDIDATE"}:
-                    candidate_node = active_actor
-                else:
-                    for node_id in active_nodes:
-                        if "BANK" in node_id.upper():
-                            candidate_node = node_id
-                            break
+            if not bank_nodes:
+                return
             
+            def extract_number(node_name):
+                import re
+                match = re.search(r'(\d+)', node_name)
+                return int(match.group(1)) if match else 999
+            
+            sorted_bank_nodes = sorted(bank_nodes, key=extract_number)
+            
+            min_spacing = 80
+            calculated_spacing = width // (len(sorted_bank_nodes) + 1)
+            spacing = max(calculated_spacing, min_spacing)
+            
+            node_radius = 35
             node_positions = {}
-            
-            if leader and "BANK" in leader.upper():
-                node_positions[leader] = (leader_x, leader_y)
-            
-            for idx, node in enumerate(bank_nodes, start=1):
+            for idx, node in enumerate(sorted_bank_nodes, start=1):
                 x = spacing * idx
-                if x + 35 > width - 10:
-                    total_width = spacing * len(bank_nodes)
+                if x + node_radius > width - 10:
+                    total_width = spacing * len(sorted_bank_nodes)
                     start_x = (width - total_width) // 2
                     x = start_x + spacing * (idx - 1) + spacing // 2
                 
                 node_positions[node] = (x, y_banks)
                 
-                if node in active_nodes or node == active_actor:
-                    fill_color = "#10b981"  # Зеленый для активных
-                    outline_width = 3
-                else:
-                    fill_color = "#2563eb"  # Синий для неактивных
-                    outline_width = 2
-                
                 canvas.create_oval(
-                    x - 35, y_banks - 35, x + 35, y_banks + 35, 
-                    fill=fill_color, outline="#0f172a", width=outline_width
+                    x - node_radius, y_banks - node_radius, x + node_radius, y_banks + node_radius, 
+                    fill="#2563eb", outline="#0f172a", width=2
                 )
-                canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 9, "bold"), width=120)
-                
-                current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
-                
-                if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-                    if leader:
-                        leader_draw_x = leader_x
-                        leader_draw_y = leader_y
-                        leader_offset = 45
-                        
-                        if "BANK" in leader.upper() and leader in node_positions:
-                            temp_x, temp_y = node_positions[leader]
-                            if temp_y != leader_y:
-                                leader_draw_x = temp_x
-                                leader_draw_y = temp_y
-                                leader_offset = 35
-                        
-                        canvas.create_line(
-                            leader_draw_x,
-                            leader_draw_y + leader_offset,
-                            x,
-                            y_banks - 35,
-                            arrow=tk.LAST,
-                            fill="#f59e0b",  # Оранжевый для запроса голосования
-                            width=2,
-                            arrowshape=(8, 10, 3),
-                            dash=(3, 3)
-                        )
-                        if node in active_nodes or node == active_actor:
-                            if current_state == "VOTE_GRANTED":
-                                canvas.create_line(
-                                    x,
-                                    y_banks + 35,
-                                    leader_draw_x,
-                                    leader_draw_y - leader_offset,
-                                    arrow=tk.LAST,
-                                    fill="#10b981",  # Зеленый для подтверждения
-                                    width=2,
-                                    arrowshape=(8, 10, 3)
-                                )
-                
-                elif current_state in {"ELECTION_START", "CANDIDATE"}:
-                    if candidate_node and node == candidate_node:
-                        for other_node in bank_nodes:
-                            if other_node != node:
-                                other_x, _ = node_positions.get(other_node, (0, 0))
-                                if other_x > 0:
-                                    if other_node in active_nodes:
-                                        canvas.create_line(
-                                            other_x,
-                                            y_banks + 35,
-                                            x,
-                                            y_banks - 35,
-                                            arrow=tk.LAST,
-                                            fill="#f59e0b",  # Оранжевый для голосования
-                                            width=2,
-                                            arrowshape=(8, 10, 3)
-                                        )
-                                    else:
-                                        canvas.create_line(
-                                            other_x,
-                                            y_banks + 35,
-                                            x,
-                                            y_banks - 35,
-                                            arrow=tk.LAST,
-                                            fill="#fbbf24",  # Светло-оранжевый для ожидания
-                                            width=1,
-                                            arrowshape=(6, 8, 2),
-                                            dash=(5, 5)
-                                        )
-                    elif candidate_node and current_state == "VOTE_GRANTED" and node in active_nodes:
-                        is_election = any(e.get("state") in {"ELECTION_START", "CANDIDATE"} 
-                                        for e in (self._consensus_anim_events[:self._consensus_anim_index + 1] 
-                                                 if hasattr(self, '_consensus_anim_events') else []))
-                        if is_election:
-                            candidate_x, _ = node_positions.get(candidate_node, (0, 0))
-                            if candidate_x > 0:
-                                canvas.create_line(
-                                    x,
-                                    y_banks + 35,
-                                    candidate_x,
-                                    y_banks - 35,
-                                    arrow=tk.LAST,
-                                    fill="#f59e0b",  # Оранжевый для голосования
-                                    width=2,
-                                    arrowshape=(8, 10, 3)
-                                )
-                
-                elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
-                    if leader:
-                        node_received = (node in active_nodes or
-                                       node == active_actor)
-                        
-                        if hasattr(self, '_consensus_anim_events') and self._consensus_anim_events:
-                            for e in self._consensus_anim_events[:self._consensus_anim_index + 1]:
-                                if e.get("actor") == node and e.get("state") == "REPLICATION":
-                                    node_received = True
-                                    break
-                        
-                        leader_draw_x = leader_x
-                        leader_draw_y = leader_y
-                        leader_offset = 45
-                        
-                        if "BANK" in leader.upper() and leader in node_positions:
-                            temp_x, temp_y = node_positions[leader]
-                            if temp_y != leader_y:
-                                leader_draw_x = temp_x
-                                leader_draw_y = temp_y
-                                leader_offset = 35
-                        
-                        if node_received:
-                            line_color = "#10b981"
-                            line_width = 3
-                            canvas.create_line(
-                                leader_draw_x,
-                                leader_draw_y + leader_offset,
-                                x,
-                                y_banks - 35,
-                                arrow=tk.LAST,
-                                fill=line_color,
-                                width=line_width,
-                                arrowshape=(10, 12, 3)
-                            )
-                        else:
-                            canvas.create_line(
-                                leader_draw_x,
-                                leader_draw_y + leader_offset,
-                                x,
-                                y_banks - 35,
-                                arrow=tk.LAST,
-                                fill="#10b981",  # Зеленый для всех репликаций
-                                width=2,
-                                dash=(3, 3)
-                            )
-                
-                if current_state not in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED",
-                                        "ELECTION_START", "CANDIDATE", "REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
-                    if leader:
-                        leader_draw_x = leader_x
-                        leader_draw_y = leader_y
-                        leader_offset = 45
-                        
-                        if "BANK" in leader.upper() and leader in node_positions:
-                            temp_x, temp_y = node_positions[leader]
-                            if temp_y != leader_y:
-                                leader_draw_x = temp_x
-                                leader_draw_y = temp_y
-                                leader_offset = 35
-                        
-                        if node in active_nodes or node == active_actor:
-                            line_color = "#10b981"
-                            line_width = 3
-                            canvas.create_line(
-                                leader_draw_x,
-                                leader_draw_y + leader_offset,
-                                x,
-                                y_banks - 35,
-                                arrow=tk.LAST,
-                                fill=line_color,
-                                width=line_width,
-                                arrowshape=(10, 12, 3)
-                            )
-                        else:
-                            canvas.create_line(
-                                leader_draw_x,
-                                leader_draw_y + leader_offset,
-                                x,
-                                y_banks - 35,
-                                arrow=tk.LAST,
-                                fill="#10b981",
-                                width=2,
-                                dash=(3, 3)
-                            )
-            subtitle = self._consensus_active_event or ""
-            current_state = self._consensus_active_state if hasattr(self, '_consensus_active_state') else None
+                canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 8, "bold"), width=80)
             
-            if current_state in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-                if self._consensus_votes is not None and self._consensus_total_banks is not None:
-                    votes = self._consensus_votes
-                    total_banks = self._consensus_total_banks
-                else:
-                    votes = 0
-                    total_banks = max(len(bank_nodes), 1)
-                canvas.create_text(
-                    width // 2,
-                    50,
-                    text=f"ЭТАП: ГОЛОСОВАНИЕ ЗА ПРИНЯТИЕ БЛОКА | Голосов: {votes}/{total_banks}",
-                    fill="#f59e0b",
-                    font=("TkDefaultFont", 10, "bold")
-                )
-            elif current_state in {"ELECTION_START", "CANDIDATE"}:
-                if self._consensus_votes is not None and self._consensus_total_banks is not None:
-                    votes = self._consensus_votes
-                    total_banks = self._consensus_total_banks
-                else:
-                    votes = 0
-                    total_banks = max(len(bank_nodes), 1)
-                canvas.create_text(
-                    width // 2,
-                    50,
-                    text=f"ЭТАП: ВЫБОРЫ ВРЕМЕННОГО ЛИДЕРА | Голосов: {votes}/{total_banks}",
-                    fill="#f59e0b",
-                    font=("TkDefaultFont", 10, "bold")
-                )
-            elif current_state in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND", "COMMITTED"}:
-                if self._consensus_replications is not None and self._consensus_total_banks is not None:
-                    replications = self._consensus_replications
-                    total_banks = self._consensus_total_banks
-                else:
-                    replications = 0
-                    total_banks = max(len(bank_nodes), 1)
-                canvas.create_text(
-                    width // 2,
-                    50,
-                    text=f"ЭТАП: РЕПЛИКАЦИЯ | Репликаций: {replications}/{total_banks}",
-                    fill="#10b981",
-                    font=("TkDefaultFont", 10, "bold")
-                )
-            else:
-                if self._consensus_votes is not None and self._consensus_total_banks is not None:
-                    votes = self._consensus_votes
-                    replications = self._consensus_replications or 0
-                    total_banks = self._consensus_total_banks
-                else:
-                    votes = 0
-                    replications = 0
-                    total_banks = max(len(bank_nodes), 1)
-                canvas.create_text(
-                    width // 2,
-                    50,
-                    text=f"Голосов: {votes}/{total_banks} | Репликаций: {replications}/{total_banks}",
-                    fill="#4b5563",
-                )
+            if current_stage > 0:
+                self._draw_stage_arrows(canvas, current_stage, leader_x, leader_y, node_positions, sorted_bank_nodes, y_banks)
             
-            if subtitle:
-                canvas.create_text(
-                    width // 2,
-                    30,
-                    text=subtitle,
-                    fill="#4b5563",
-                )
-
-            ledger_canvas = self.ledger_canvas
-            if ledger_canvas:
-                ledger_canvas.delete("all")
-                lwidth = int(ledger_canvas.winfo_width() or 1200)
-                rows = self.platform.db.execute(
-                    "SELECT height, hash, previous_hash FROM blocks ORDER BY height DESC LIMIT 8",
-                    fetchall=True,
-                )
-                if not rows:
-                    ledger_canvas.create_text(
-                        lwidth // 2,
-                        40,
-                        text="Блоки реестра ещё не созданы",
-                        fill="black",
-                    )
-                else:
-                    rows = list(reversed(rows))
-                    self._ledger_last_rows = rows
-                    count = len(rows)
-                    spacing_l = max(lwidth // (count + 1), 120)
-                    y_l = 80
-                    prev_x = None
-                    prev_y = None
-                    for idx, row in enumerate(rows, start=1):
-                        x = spacing_l * idx
-                        x0, y0, x1, y1 = x - 60, y_l - 30, x + 60, y_l + 30
-                        is_active = row["height"] == self._ledger_active_height
-                        fill_color = "#fde68a" if is_active else "#eff6ff"
-                        outline_color = "#92400e" if is_active else "#1d4ed8"
-                        ledger_canvas.create_rectangle(
-                            x0, y0, x1, y1, fill=fill_color, outline=outline_color, width=2
-                        )
-                        ledger_canvas.create_text(
-                            x,
-                            y_l - 10,
-                            text=f"Блок {row['height']}",
-                            fill="black",
-                        )
-                        hash_text = row["hash"][:12] + "..."
-                        ledger_canvas.create_text(
-                            x,
-                            y_l + 5,
-                            text=hash_text,
-                            fill="#4b5563",
-                            font=("TkDefaultFont", 7),
-                        )
-                        
-                        tx_count_row = self.platform.db.execute(
-                            "SELECT COUNT(*) as count FROM block_transactions bt JOIN blocks b ON b.id = bt.block_id WHERE b.height = ?",
-                            (row["height"],),
-                            fetchone=True,
-                        )
-                        tx_count = tx_count_row["count"] if tx_count_row else 0
-                        ledger_canvas.create_text(
-                            x,
-                            y_l + 18,
-                            text=f"{tx_count} TX",
-                            fill="#059669",
-                            font=("TkDefaultFont", 7, "bold"),
-                        )
-                        
-                        def on_block_click(event, block_height=row["height"]):
-                            if self.block_table:
-                                for item in self.block_table.get_children():
-                                    values = self.block_table.item(item, "values")
-                                    if values and str(block_height) in str(values[0]):
-                                        self.block_table.selection_set(item)
-                                        self.block_table.see(item)
-                                        self._on_block_row_double_click(None)
-                                        break
-                        
-                        click_area = ledger_canvas.create_rectangle(
-                            x0, y0, x1, y1, fill="", outline="", width=0
-                        )
-                        ledger_canvas.tag_bind(click_area, "<Button-1>", on_block_click)
-                        ledger_canvas.tag_bind(click_area, "<Enter>", lambda e, x=x, y=y_l: ledger_canvas.create_text(x, y-40, text=f"", fill="#059669", font=("TkDefaultFont", 8), tags="tooltip"))
-                        ledger_canvas.tag_bind(click_area, "<Leave>", lambda e: ledger_canvas.delete("tooltip"))
-                        
-                        if prev_x is not None:
-                            ledger_canvas.create_line(
-                                prev_x + 60, prev_y, x - 60, y_l, 
-                                arrow=tk.LAST, 
-                                fill="#6b7280",
-                                width=2,
-                                arrowshape=(8, 10, 3)
-                            )
-                            mid_x = (prev_x + 60 + x - 60) // 2
-                            mid_y = (prev_y + y_l) // 2
-                            prev_hash = row.get("previous_hash") if isinstance(row, dict) else (row["previous_hash"] if "previous_hash" in row.keys() else None)
-                            prev_hash_short = prev_hash[:8] + "..." if prev_hash else "Genesis"
-                            ledger_canvas.create_text(
-                                mid_x, mid_y - 8,
-                                text=prev_hash_short,
-                                fill="#9ca3af",
-                                font=("TkDefaultFont", 6),
-                            )
-                        prev_x, prev_y = x, y_l
         except Exception as e:
             import traceback
             print(f"Ошибка при обновлении canvas консенсуса: {e}")
             traceback.print_exc()
+    
+    def _determine_current_stage(self) -> int:
+        """Определяет текущий этап консенсуса строго последовательно 1→6"""
+        if not hasattr(self, '_consensus_anim_events') or not self._consensus_anim_events:
+            return 0
+        
+        seen_events = self._consensus_anim_events[:self._consensus_anim_index + 1]
+        if not seen_events:
+            return 0
+        
+        stage = 0
+        
+        if any(e.get("state") in {"APPEND_ENTRIES", "LEADER_APPEND"} for e in seen_events):
+            stage = 1
+        else:
+            return stage
+        
+        if any(e.get("state") in {"VOTE_REQUEST", "VOTE_GRANTED", "QUORUM_REACHED"} for e in seen_events):
+            stage = 2
+        else:
+            return stage
+        
+        if any(e.get("state") == "REPLICATION" for e in seen_events):
+            stage = 3
+        else:
+            return stage
+        
+        if any(
+            e.get("state") == "ENTRY_APPLIED"
+            and e.get("actor")
+            and "BANK" in e.get("actor", "").upper()
+            for e in seen_events
+        ):
+            stage = 4
+        else:
+            return stage
+        
+        if any(
+            e.get("state") == "ENTRY_APPLIED"
+            and e.get("actor")
+            and ("CBR" in e.get("actor", "").upper() or "ЦБ" in e.get("actor", "").upper())
+            for e in seen_events
+        ):
+            stage = 5
+        else:
+            return stage
+        
+        if any(e.get("state") == "COMMITTED" for e in seen_events):
+            stage = 6
+        
+        return stage
+    
+    def _get_stage_name(self, stage: int) -> str:
+        """Возвращает название этапа"""
+        stages = {
+            0: "Ожидание начала консенсуса",
+            1: "1 ЭТАП: Рассылка блока от ЦБ к ФО для верификации",
+            2: "2 ЭТАП: Голосования за принятие блока (подтверждение от ФО)",
+            3: "3 ЭТАП: Репликация подтвержденного блока от ЦБ к ФО",
+            4: "4 ЭТАП: Сохранение блока в локальных хранилищах ФО",
+            5: "5 ЭТАП: Подтверждение от ФО к ЦБ об успешной репликации",
+            6: "6 ЭТАП: Фиксация успешной репликации в ЦБ",
+        }
+        return stages.get(stage, "Неизвестный этап")
+    
+    def _draw_stage_arrows(self, canvas, stage: int, leader_x: int, leader_y: int, 
+                          node_positions: dict, sorted_bank_nodes: list, y_banks: int) -> None:
+        """Рисует стрелочки для текущего этапа"""
+        if not hasattr(self, '_consensus_anim_events') or not self._consensus_anim_events:
+            return
+        
+        seen_events = self._consensus_anim_events[:self._consensus_anim_index + 1]
+        node_radius = 35
+        leader_radius = 40
+        
+        if stage == 1:
+            for node in sorted_bank_nodes:
+                x, _ = node_positions.get(node, (0, 0))
+                if x > 0:
+                    canvas.create_line(
+                        leader_x,
+                        leader_y + leader_radius,
+                        x,
+                        y_banks - node_radius,
+                        arrow=tk.LAST,
+                        fill="#10b981",
+                        width=4,
+                        arrowshape=(14, 16, 5)
+                    )
+        
+        elif stage == 2:
+            for node in sorted_bank_nodes:
+                x, _ = node_positions.get(node, (0, 0))
+                if x > 0:
+                    canvas.create_line(
+                        x,
+                        y_banks - node_radius,
+                        leader_x,
+                        leader_y + leader_radius,
+                        arrow=tk.LAST,
+                        fill="#10b981",
+                        width=4,
+                        arrowshape=(14, 16, 5)
+                    )
+        
+        elif stage == 3:
+            for node in sorted_bank_nodes:
+                x, _ = node_positions.get(node, (0, 0))
+                if x > 0:
+                    canvas.create_line(
+                        leader_x,
+                        leader_y + leader_radius,
+                        x,
+                        y_banks - node_radius,
+                        arrow=tk.LAST,
+                        fill="#10b981",
+                        width=4,
+                        arrowshape=(14, 16, 5)
+                    )
+        
+        elif stage == 4:
+            for node in sorted_bank_nodes:
+                x, _ = node_positions.get(node, (0, 0))
+                if x > 0:
+                    canvas.create_oval(
+                        x - node_radius, y_banks - node_radius, x + node_radius, y_banks + node_radius, 
+                        fill="#f59e0b", outline="#0f172a", width=3
+                    )
+                    canvas.create_text(x, y_banks, text=node, fill="white", font=("TkDefaultFont", 8, "bold"), width=80)
+        
+        elif stage == 5:
+            for node in sorted_bank_nodes:
+                x, _ = node_positions.get(node, (0, 0))
+                if x > 0:
+                    canvas.create_line(
+                        x,
+                        y_banks - node_radius,
+                        leader_x,
+                        leader_y + leader_radius,
+                        arrow=tk.LAST,
+                        fill="#10b981",
+                        width=4,
+                        arrowshape=(14, 16, 5)
+                    )
+        
+        elif stage == 6:
+            canvas.create_oval(
+                leader_x - leader_radius, leader_y - leader_radius, 
+                leader_x + leader_radius, leader_y + leader_radius, 
+                fill="#fbbf24", outline="#0f172a", width=3
+            )
+            canvas.create_text(leader_x, leader_y, text="ЦБ РФ", fill="black", width=100, font=("TkDefaultFont", 8, "bold"))
+            canvas.create_text(
+                leader_x,
+                leader_y + leader_radius + 20,
+                text="Фиксация успешной репликации",
+                fill="#1f2937",
+                font=("TkDefaultFont", 9, "bold")
+            )
 
     def _refresh_online_combos(self) -> None:
         if not self.sender_combo or not self.receiver_combo:
@@ -3437,80 +3367,42 @@ class DigitalRubleApp(tk.Tk):
                 output_lines.append("ЭТАП 3: ВЫБОРЫ ВРЕМЕННОГО ЛИДЕРА СРЕДИ ФО (НЕ ЦБ)")
                 output_lines.append("-" * 100)
                 output_lines.append("  После отказа ЦБ новый лидер выбирается среди Финансовых Организаций (ФО)")
-                output_lines.append("  Кандидатом становится ФО с наибольшим логическим индексом (log_index)")
+                output_lines.append("  Кандидатом становится ФО")
                 output_lines.append("  Процесс голосования за принятие нового лидера (кворум)")
                 output_lines.append("")
                 if election_events:
-                    terms = {}
-                    other_events = []
+                    candidate = None
+                    votes = []
+                    leader_elected = None
+                    candidate_analysis = None
                     
                     for event in election_events:
                         event_text = event.get("event", "")
-                        if "term-" in event_text:
-                            try:
-                                parts = event_text.split("term-")
-                                if len(parts) > 1:
-                                    term_part = parts[1].split()[0] if parts[1] else "0"
-                                    if term_part not in terms:
-                                        terms[term_part] = []
-                                    terms[term_part].append(event)
-                                else:
-                                    other_events.append(event)
-                            except Exception:
-                                other_events.append(event)
-                        else:
-                            other_events.append(event)
+                        state = event.get("state", "")
+                        actor = event.get("actor", "")
+                        
+                        if "CANDIDATE_ANALYSIS" in state or "Анализ кандидатов" in event_text:
+                            candidate_analysis = event_text
+                        elif "ELECTION_START" in state or "становится кандидатом" in event_text:
+                            if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                candidate = actor
+                        elif "VOTE_GRANTED" in state or "Голос получен" in event_text:
+                            if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                votes.append(actor)
+                        elif "LEADER_ELECTED" in state or "избран временным лидером" in event_text:
+                            if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
+                                leader_elected = actor
                     
-                    for term, events in sorted(terms.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
-                        output_lines.append(f"  ТЕРМ {term}:")
-                        
-                        candidate = None
-                        votes = []
-                        leader_elected = None
-                        candidate_analysis = None
-                        
-                        for event in events:
-                            event_text = event.get("event", "")
-                            state = event.get("state", "")
-                            actor = event.get("actor", "")
-                            
-                            if "CANDIDATE_ANALYSIS" in state or "Анализ кандидатов" in event_text:
-                                candidate_analysis = event_text
-                            elif "ELECTION_START" in state or "становится кандидатом" in event_text:
-                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
-                                    candidate = actor
-                            elif "VOTE_GRANTED" in state or "Голос получен" in event_text:
-                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
-                                    votes.append(actor)
-                            elif "LEADER_ELECTED" in state or "избран временным лидером" in event_text:
-                                if "CBR" not in actor.upper() and "ЦБ" not in actor.upper():
-                                    leader_elected = actor
-                        
-                        if candidate:
-                            candidate_log_index = None
-                            for event in events:
-                                event_text = event.get("event", "")
-                                if "log_index" in event_text and candidate in event_text:
-                                    try:
-                                        if "log_index=" in event_text:
-                                            idx_part = event_text.split("log_index=")[1].split()[0].rstrip(")")
-                                            candidate_log_index = idx_part
-                                        elif "log_index: " in event_text:
-                                            idx_part = event_text.split("log_index: ")[1].split()[0]
-                                            candidate_log_index = idx_part
-                                    except:
-                                        pass
-                            
-                            if "CBR" in candidate.upper() or "ЦБ" in candidate.upper():
-                                output_lines.append(f"    ОШИБКА: ЦБ не может быть кандидатом на роль временного лидера!")
-                                output_lines.append(f"    Выборы должны проводиться только среди ФО (Финансовых Организаций)")
-                                continue
-                            
-                            output_lines.append(f"    КАНДИДАТ: {candidate} (ФО с наибольшим log_index: {candidate_log_index or 'неизвестно'})")
+                    if candidate:
+                        if "CBR" in candidate.upper() or "ЦБ" in candidate.upper():
+                            output_lines.append(f"    ОШИБКА: ЦБ не может быть кандидатом на роль временного лидера!")
+                            output_lines.append(f"    Выборы должны проводиться только среди ФО (Финансовых Организаций)")
+                        else:
+                            output_lines.append(f"    КАНДИДАТ: {candidate}")
                             output_lines.append(f"    ВАЖНО: Выборы проводятся ТОЛЬКО среди ФО, ЦБ не участвует в выборах")
                             output_lines.append(f"    ПРОЦЕСС ГОЛОСОВАНИЯ ЗА ПРИНЯТИЕ НОВОГО ЛИДЕРА (КВОРУМ):")
                             
-                            nodes_count = len([e for e in events if "BANK" in e.get("actor", "") or "CBR" not in e.get("actor", "")])
+                            nodes_count = len([e for e in election_events if "BANK" in e.get("actor", "") or "CBR" not in e.get("actor", "")])
                             majority_needed = (nodes_count // 2) + 1 if nodes_count > 0 else 1
                             
                             if votes:
@@ -3526,18 +3418,14 @@ class DigitalRubleApp(tk.Tk):
                                     output_lines.append(f"    ОШИБКА: ЦБ не может быть избран временным лидером!")
                                     output_lines.append(f"    Временным лидером может быть только ФО (Финансовая Организация)")
                                 else:
-                                    total_votes = len(votes) + 1  # +1 за голос кандидата за себя
+                                    total_votes = len(votes) + 1
                                     output_lines.append(f"    РЕЗУЛЬТАТ: {leader_elected} (ФО) ИЗБРАН ВРЕМЕННЫМ ЛИДЕРОМ")
                                     output_lines.append(f"    Всего голосов: {total_votes} (включая голос кандидата за себя)")
                                     output_lines.append(f"    Кворум достигнут: {total_votes} >= {majority_needed}")
                                     output_lines.append(f"    ВАЖНО: Временный лидер - это ФО, а не ЦБ")
-                            output_lines.append("")
-                        
                         output_lines.append("")
                     
-                    if other_events:
-                        output_lines.append("  (Детальные события выборов см. в хронологии ниже)")
-                        output_lines.append("")
+                    output_lines.append("")
                 else:
                     output_lines.append("  События выборов отсутствуют.")
                     output_lines.append("  Примечание: Выборы будут инициированы при следующем создании блока.")
@@ -3805,6 +3693,13 @@ class DigitalRubleApp(tk.Tk):
         if self._consensus_anim_job is not None:
             self.after_cancel(self._consensus_anim_job)
             self._consensus_anim_job = None
+        if getattr(self, "_forced_consensus_job", None):
+            try:
+                self.after_cancel(self._forced_consensus_job)
+            except Exception:
+                pass
+        self._forced_consensus_stage = None
+        self._forced_consensus_job = None
         stats = self.platform.consensus.stats()
         last_block = stats.get("last_block")
         
@@ -3848,6 +3743,28 @@ class DigitalRubleApp(tk.Tk):
         else:
             self._refresh_consensus_canvas()
 
+        self._forced_consensus_stage = 1
+        self._refresh_consensus_canvas()
+        self._schedule_next_forced_stage()
+
+    def _schedule_next_forced_stage(self) -> None:
+        if not hasattr(self, "_forced_consensus_stage"):
+            self._forced_consensus_stage = 1
+        if self._forced_consensus_stage is None:
+            return
+        if self._forced_consensus_stage >= 6:
+            return
+
+        def advance():
+            if self._forced_consensus_stage is None:
+                return
+            self._forced_consensus_stage = min(6, self._forced_consensus_stage + 1)
+            self._refresh_consensus_canvas()
+            if self._forced_consensus_stage < 6:
+                self._schedule_next_forced_stage()
+
+        self._forced_consensus_job = self.after(3000, advance)
+
     def _run_consensus_animation_step(self) -> None:
         if not self.consensus_canvas:
             self._consensus_anim_job = None
@@ -3858,85 +3775,23 @@ class DigitalRubleApp(tk.Tk):
             self._consensus_active_state = None
             self._consensus_active_event = None
             self._consensus_active_nodes = set()
-            self._consensus_votes = 0
-            self._consensus_replications = 0
-            nodes = self.platform.consensus.get_nodes()
-            bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
-            self._consensus_total_banks = max(len(bank_nodes), 1)
             self._refresh_consensus_canvas()
             self._consensus_anim_job = None
             return
         
+        if self._consensus_anim_index >= len(self._consensus_anim_events):
+            self._consensus_anim_index = 0
+        
         event = self._consensus_anim_events[self._consensus_anim_index]
-        self._consensus_active_actor = event["actor"]
-        self._consensus_active_state = event["state"]
-        self._consensus_active_event = event["event"]
+        self._consensus_active_actor = event.get("actor")
+        self._consensus_active_state = event.get("state")
+        self._consensus_active_event = event.get("event")
         
-        self._consensus_active_nodes = set()
-        
-        if event["state"] in {"VOTE_REQUEST", "VOTE_GRANTED", "VOTE_DENIED", "QUORUM_REACHED", "QUORUM_FAILED"}:
-            if event["actor"] != self.platform.consensus.node_id:
-                self._consensus_active_nodes.add(event["actor"])
-            nodes = self.platform.consensus.get_nodes()
-            for node in nodes:
-                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
-                    self._consensus_active_nodes.add(node)
-        elif event["state"] in {"ELECTION_START", "CANDIDATE"}:
-            if event["actor"] != self.platform.consensus.node_id:
-                self._consensus_active_nodes.add(event["actor"])
-            nodes = self.platform.consensus.get_nodes()
-            for node in nodes:
-                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
-                    self._consensus_active_nodes.add(node)
-        elif event["state"] in {"VOTE_GRANTED", "VOTE_DENIED"}:
-            is_election = any(e["state"] in {"ELECTION_START", "CANDIDATE"} 
-                            for e in self._consensus_anim_events[:self._consensus_anim_index])
-            if not is_election:
-                if event["actor"] != self.platform.consensus.node_id:
-                    self._consensus_active_nodes.add(event["actor"])
-                nodes = self.platform.consensus.get_nodes()
-                for node in nodes:
-                    if "BANK" in node.upper() and node != self.platform.consensus.node_id:
-                        self._consensus_active_nodes.add(node)
-            if event["actor"] != self.platform.consensus.node_id:
-                self._consensus_active_nodes.add(event["actor"])
-            nodes = self.platform.consensus.get_nodes()
-            for node in nodes:
-                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
-                    self._consensus_active_nodes.add(node)
-        elif event["state"] in {"REPLICATION", "APPEND_ENTRIES", "LEADER_APPEND"}:
-            if event["actor"] != self.platform.consensus.node_id:
-                self._consensus_active_nodes.add(event["actor"])
-            nodes = self.platform.consensus.get_nodes()
-            for node in nodes:
-                if "BANK" in node.upper() and node != self.platform.consensus.node_id:
-                    self._consensus_active_nodes.add(node)
-        elif event["state"] == "COMMITTED":
-            nodes = self.platform.consensus.get_nodes()
-            self._consensus_active_nodes = set(nodes[1:])  # Все банки кроме лидера
-        
-        if self._ledger_last_rows:
-            idx = self._consensus_anim_index % len(self._ledger_last_rows)
-            self._ledger_active_height = self._ledger_last_rows[idx]["height"]
-        else:
-            self._ledger_active_height = None
-        seen = self._consensus_anim_events[: self._consensus_anim_index + 1]
-        nodes = self.platform.consensus.get_nodes()
-        bank_nodes = [n for n in nodes if "BANK" in n.upper() and "CBR" not in n.upper()]
-        cbr_nodes = [n for n in nodes if "CBR" in n.upper() or (hasattr(self.platform.consensus, 'is_central_bank') and self.platform.consensus.is_central_bank)]
-        
-        vote_events = [e for e in seen if e["state"] in {"VOTE_GRANTED", "QUORUM_REACHED"}]
-        self._consensus_votes = sum(1 for e in vote_events 
-                                    if e.get("actor") not in cbr_nodes and 
-                                    (e.get("actor") in bank_nodes or "BANK" in str(e.get("actor", "")).upper()))
-        
-        self._consensus_replications = sum(1 for e in seen if e["state"] in {"REPLICATION", "COMMITTED"})
-        self._consensus_total_banks = max(len(bank_nodes), 1)
         self._refresh_consensus_canvas()
-        self._consensus_anim_index = (self._consensus_anim_index + 1) % len(
-            self._consensus_anim_events
-        )
-        self._consensus_anim_job = self.after(1000, self._run_consensus_animation_step)
+        
+        self._consensus_anim_index = (self._consensus_anim_index + 1) % len(self._consensus_anim_events)
+        
+        self._consensus_anim_job = self.after(800, self._run_consensus_animation_step)
 
     def _selected_id(self, value: str) -> int:
         if not value:
@@ -3947,20 +3802,7 @@ class DigitalRubleApp(tk.Tk):
         try:
             user_id = self._selected_id(self.wallet_user_combo.get())
             user = self.platform.get_user(user_id)
-
-            selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
-            if selected_bank_text:
-                selected_bank_id = self._selected_id(selected_bank_text)
-                if selected_bank_id != user["bank_id"]:
-                    messagebox.showerror(
-                        "Открытие кошелька",
-                        f"Пользователь {user['name']} обслуживается в банке ID {user['bank_id']}. "
-                        f"Выберите соответствующий банк (ФО) перед открытием кошелька.",
-                    )
-                    return
-            else:
-                self._on_wallet_user_change()
-
+            
             already_open = user["wallet_status"] == "OPEN"
             self.platform.open_digital_wallet(user_id)
             self.refresh_all()
@@ -3975,22 +3817,9 @@ class DigitalRubleApp(tk.Tk):
         try:
             user_id = self._selected_id(self.wallet_user_combo.get())
             user = self.platform.get_user(user_id)
-
-            selected_bank_text = self.wallet_bank_combo.get() if self.wallet_bank_combo else ""
-            if selected_bank_text:
-                selected_bank_id = self._selected_id(selected_bank_text)
-                if selected_bank_id != user["bank_id"]:
-                    messagebox.showerror(
-                        "Конвертация средств",
-                        f"Пользователь {user['name']} обслуживается в банке ID {user['bank_id']}. "
-                        f"Выберите соответствующий банк (ФО) перед пополнением цифрового кошелька.",
-                    )
-                    return
-            else:
-                self._on_wallet_user_change()
-
+            selected_bank_id = user["bank_id"]
             amount = float(self.convert_amount.get())
-            self.platform.exchange_to_digital(user_id, amount)
+            self.platform.exchange_to_digital(user_id, amount, bank_id=selected_bank_id)
             self.refresh_all()
             messagebox.showinfo(
                 "Конвертация средств",
@@ -4135,6 +3964,7 @@ class DigitalRubleApp(tk.Tk):
                 values=(
                     "-",
                     "-",
+                    "-",
                     "Выберите финансовую организацию для просмотра данных",
                     "-",
                 ),
@@ -4150,6 +3980,7 @@ class DigitalRubleApp(tk.Tk):
                     "",
                     tk.END,
                     values=(
+                        "-",
                         "-",
                         "-",
                         "Нет клиентов в данной финансовой организации",
@@ -4217,6 +4048,7 @@ class DigitalRubleApp(tk.Tk):
                     "",
                     tk.END,
                     values=(
+                        user_id,
                         user_name,
                         user_type,
                         tx_count,
@@ -4232,6 +4064,7 @@ class DigitalRubleApp(tk.Tk):
                 "",
                 tk.END,
                 values=(
+                    "-",
                     "Ошибка",
                     "-",
                     f"Не удалось загрузить данные: {str(e)}",
@@ -4302,10 +4135,10 @@ class DigitalRubleApp(tk.Tk):
         
         item = selection[0]
         values = self.bank_tx_table.item(item, "values")
-        if not values or len(values) < 1:
+        if not values or len(values) < 2:
             return
         
-        client_name = values[0]
+        client_name = values[1]
         if client_name == "-" or client_name == "Ошибка":
             return
         
@@ -4347,8 +4180,8 @@ class DigitalRubleApp(tk.Tk):
             if selection:
                 item = selection[0]
                 values = self.bank_tx_table.item(item, "values")
-                if values and len(values) > 0:
-                    client_name = values[0]
+                if values and len(values) > 1:
+                    client_name = values[1]
                     users = self.platform.list_users()
                     bank_users = [u for u in users if u.get("bank_id") == bank_id]
                     for user in bank_users:

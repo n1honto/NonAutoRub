@@ -3,12 +3,10 @@ import hashlib
 from typing import Optional
 
 try:
-    from Crypto.Cipher import AES
-    from Crypto.Random import get_random_bytes
-    from Crypto.Protocol.KDF import PBKDF2
-    CRYPTO_AVAILABLE = True
+    from pygost.gost3412 import Kuznechik
+    GOST_AVAILABLE = True
 except ImportError:
-    CRYPTO_AVAILABLE = False
+    GOST_AVAILABLE = False
     import secrets
 
 
@@ -21,43 +19,90 @@ class SecureKeyStorage:
             else:
                 master_key = hashlib.sha256(b"druble-master-key-secret").digest()
         
-        if CRYPTO_AVAILABLE:
-            self.encryption_key = PBKDF2(
-                master_key,
-                b"druble-key-salt",
-                dkLen=32,
-                count=100000
-            )
+        if GOST_AVAILABLE:
+            key_material = hashlib.sha256(master_key + b"druble-key-salt").digest()
+            key_material += hashlib.sha256(key_material + b"druble-key-salt-2").digest()
+            self.encryption_key = key_material[:32]
         else:
             self.encryption_key = hashlib.sha256(master_key + b"druble-key-salt").digest()
     
     def encrypt_key(self, private_key: int) -> bytes:
         key_bytes = private_key.to_bytes(32, 'big')
         
-        if CRYPTO_AVAILABLE:
-            cipher = AES.new(self.encryption_key, AES.MODE_GCM)
-            ciphertext, tag = cipher.encrypt_and_digest(key_bytes)
-            return cipher.nonce + tag + ciphertext
+        if GOST_AVAILABLE:
+            import secrets
+            from streebog import streebog_256
+            
+            iv = secrets.token_bytes(16)
+            
+            cipher = Kuznechik(self.encryption_key)
+            
+            ciphertext = bytearray()
+            counter = int.from_bytes(iv, 'big')
+            block_size = 16
+            
+            for i in range(0, len(key_bytes), block_size):
+                block = key_bytes[i:i + block_size]
+                if len(block) < block_size:
+                    block = block + b'\x00' * (block_size - len(block))
+                
+                counter_block = counter.to_bytes(16, 'big')
+                keystream = cipher.encrypt(counter_block)
+                encrypted_block = bytes([b ^ k for b, k in zip(block, keystream)])
+                ciphertext.extend(encrypted_block)
+                counter += 1
+            
+            ciphertext = bytes(ciphertext)
+            
+            hmac_data = iv + ciphertext
+            hmac_key = hashlib.sha256(self.encryption_key + b"hmac-key").digest()
+            tag = streebog_256(hmac_key + hmac_data)
+            
+            return iv + tag + ciphertext
         else:
+            import secrets
             nonce = secrets.token_bytes(16)
-            tag = secrets.token_bytes(16)
+            tag = secrets.token_bytes(32)
             ciphertext = bytes([b ^ self.encryption_key[i % len(self.encryption_key)] 
                                for i, b in enumerate(key_bytes)])
             return nonce + tag + ciphertext
     
     def decrypt_key(self, encrypted_data: bytes) -> int:
-        nonce = encrypted_data[:16]
-        tag = encrypted_data[16:32]
-        ciphertext = encrypted_data[32:]
+        iv = encrypted_data[:16]
+        tag = encrypted_data[16:48]
+        ciphertext = encrypted_data[48:]
         
-        if CRYPTO_AVAILABLE:
-            cipher = AES.new(self.encryption_key, AES.MODE_GCM, nonce=nonce)
-            key_bytes = cipher.decrypt_and_verify(ciphertext, tag)
+        if GOST_AVAILABLE:
+            from streebog import streebog_256
+            
+            hmac_data = iv + ciphertext
+            hmac_key = hashlib.sha256(self.encryption_key + b"hmac-key").digest()
+            expected_tag = streebog_256(hmac_key + hmac_data)
+            
+            if tag != expected_tag:
+                raise ValueError("HMAC verification failed")
+            
+            cipher = Kuznechik(self.encryption_key)
+            
+            key_bytes = bytearray()
+            counter = int.from_bytes(iv, 'big')
+            block_size = 16
+            
+            for i in range(0, len(ciphertext), block_size):
+                block = ciphertext[i:i + block_size]
+                
+                counter_block = counter.to_bytes(16, 'big')
+                keystream = cipher.encrypt(counter_block)
+                decrypted_block = bytes([b ^ k for b, k in zip(block, keystream)])
+                key_bytes.extend(decrypted_block)
+                counter += 1
+            
+            key_bytes = bytes(key_bytes)
         else:
             key_bytes = bytes([b ^ self.encryption_key[i % len(self.encryption_key)] 
                               for i, b in enumerate(ciphertext)])
         
-        return int.from_bytes(key_bytes, 'big')
+        return int.from_bytes(key_bytes[:32], 'big')
     
     def store_key(self, owner_type: str, owner_id: int, private_key: int) -> None:
         encrypted = self.encrypt_key(private_key)

@@ -400,10 +400,8 @@ class DatabaseManager:
                     try:
                         self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
                     except sqlite3.OperationalError:
-                        # Колонка может уже существовать (race condition) или таблица не существует
                         pass
         except sqlite3.OperationalError:
-            # Таблица не существует, пропускаем миграцию
             pass
 
     def _ensure_block_heights(self) -> None:

@@ -410,7 +410,7 @@ class RaftConsensus:
 
         self.record_event(
             block_hash,
-            f"Запись добавлена: индекс {log_index}, терм {leader_term}",
+            f"Запись добавлена",
             leader_id,
             "APPEND_ENTRIES",
         )
@@ -442,7 +442,7 @@ class RaftConsensus:
             if row:
                 self.record_event(
                     row["block_hash"],
-                    f"Запись применена: индекс {self.last_applied}",
+                    f"Запись применена",
                     self.node_id,
                     "ENTRY_APPLIED",
                 )
@@ -586,10 +586,15 @@ class RaftConsensus:
             log_index = self._append_log_entry(block_hash)
             self.record_event(
                 block_hash,
-                f"Лидер добавил запись: индекс {log_index}",
+                f"Лидер добавил запись",
                 self.node_id,
                 "LEADER_APPEND",
             )
+            
+            nodes = self.get_nodes()
+            for node in nodes:
+                if node != self.node_id:
+                    self.append_entries(block_hash, self.node_id, self.current_term)
             
             vote_successful, vote_failed = self._request_block_votes(block_hash)
             
@@ -602,6 +607,12 @@ class RaftConsensus:
             return timeline
         
         else:
+            if not self._is_cbr_failed():
+                if self._is_leader():
+                    self._transfer_leadership_to_cbr()
+                self.last_heartbeat = time.time()
+                return timeline
+            
             if time.time() - self.last_heartbeat > self.election_timeout:
                 if not self._is_leader():
                     if self.start_election():
@@ -615,7 +626,7 @@ class RaftConsensus:
                 log_index = self._append_log_entry(block_hash)
                 self.record_event(
                     block_hash,
-                    f"Временный лидер (ФО) формирует блок: индекс {log_index}",
+                    f"Временный лидер (ФО) формирует блок",
                     self.node_id,
                     "LEADER_APPEND",
                 )
@@ -748,26 +759,10 @@ class RaftConsensus:
                 self.node_id,
                 "NORMAL_OPERATION_RESUMED",
             )
-            self.record_event(
-                "cbr-recovery-simulation",
-                f"ЦБ начинает прием сформированных блоков от временного лидера",
-                self.node_id,
-                "BLOCKS_RECEPTION_START",
-            )
-            self.record_event(
-                "cbr-recovery-simulation",
-                f"ЦБ начинает репликацию принятых блоков на все узлы сети",
-                self.node_id,
-                "REPLICATION_START",
-            )
-            self.record_event(
-                "cbr-recovery-simulation",
-                f"ЦБ возвращается в штатный режим работы",
-                self.node_id,
-                "NORMAL_OPERATION_RESUMED",
-            )
         else:
             self.last_heartbeat = time.time()
+            self.state = RaftState.FOLLOWER
+            self.leader_id = None
             if self._is_leader():
                 self._transfer_leadership_to_cbr()
             self.record_event(

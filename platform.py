@@ -189,8 +189,6 @@ class DigitalRublePlatform:
             if not hasattr(self, 'fork_resolver'):
                 self.fork_resolver = None
         
-        self._initialize_default_banks()
-        
         if BATCH_PROCESSING_AVAILABLE:
             self.tx_logger = TransactionLogger(self._log_activity)
             self.tx_batch_processor = TransactionBatchProcessor(
@@ -299,6 +297,44 @@ class DigitalRublePlatform:
             )
 
     def reset_state(self) -> None:
+        from pathlib import Path
+        import glob
+        import os
+        
+        banks = self.list_banks()
+        bank_db_connections = []
+        
+        for bank in banks:
+            bank_id = bank["id"]
+            bank_db_path = f"bank_{bank_id}.db"
+            if Path(bank_db_path).exists():
+                try:
+                    from database import DatabaseManager
+                    bank_db = DatabaseManager(bank_db_path)
+                    bank_db_connections.append((bank_db, bank_db_path))
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Не удалось открыть БД банка {bank_id}: {e}")
+        
+        for bank_db, bank_db_path in bank_db_connections:
+            try:
+                bank_db._conn.close()
+                del bank_db
+            except Exception:
+                pass
+        
+        import gc
+        gc.collect()
+        
+        for bank_db_file in glob.glob("bank_*.db"):
+            try:
+                db_path = Path(bank_db_file)
+                if db_path.exists():
+                    db_path.unlink(missing_ok=True)
+            except Exception as e:
+                import logging
+                logging.warning(f"Не удалось удалить файл БД {bank_db_file}: {e}")
+        
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
             self.db.execute("DELETE FROM offline_transactions")
@@ -319,6 +355,18 @@ class DigitalRublePlatform:
             self.db.execute("DELETE FROM wallets")
             
             self.db.execute("DELETE FROM blocks WHERE height > 0")
+            self.db.execute("DELETE FROM banks")
+            
+            if self._distributed_enabled and self.node_manager:
+                try:
+                    self.db.execute("DELETE FROM node_connections WHERE from_node_id LIKE 'BANK_%' OR to_node_id LIKE 'BANK_%'")
+                    self.db.execute("DELETE FROM network_nodes WHERE node_id LIKE 'BANK_%'")
+                    self.node_manager._known_nodes = {
+                        k: v for k, v in self.node_manager._known_nodes.items() 
+                        if not ("BANK" in k.upper() and k != self.node_id)
+                    }
+                except Exception:
+                    pass
             
             try:
                 self.db.execute(
@@ -329,49 +377,9 @@ class DigitalRublePlatform:
                 pass
         finally:
             self.db.execute("PRAGMA foreign_keys = ON")
-        
-        from pathlib import Path
-        banks = self.list_banks()
-        for bank in banks:
-            bank_id = bank["id"]
-            bank_db_path = f"bank_{bank_id}.db"
-            if Path(bank_db_path).exists():
-                try:
-                    from database import DatabaseManager
-                    bank_db = DatabaseManager(bank_db_path)
-                    bank_db.execute("PRAGMA foreign_keys = OFF")
-                    try:
-                        bank_db.execute("DELETE FROM government_institutions")
-                        bank_db.execute("DELETE FROM users")
-                        bank_db.execute("DELETE FROM transactions")
-                        bank_db.execute("DELETE FROM blocks WHERE height > 0")
-                        bank_db.execute("DELETE FROM block_transactions")
-                        bank_db.execute("DELETE FROM utxos")
-                        try:
-                            bank_db.execute(
-                                "DELETE FROM sqlite_sequence WHERE name IN ('users', 'government_institutions')"
-                            )
-                        except Exception:
-                            pass
-                    finally:
-                        bank_db.execute("PRAGMA foreign_keys = ON")
-                except Exception as e:
-                    import logging
-                    logging.warning(f"Не удалось очистить БД банка {bank_id}: {e}")
 
     def create_banks(self, count: int) -> List[int]:
-        """
-        Создает банки. Используется только для внутренней инициализации.
-        Максимальное количество банков - DEFAULT_BANK_COUNT.
-        """
         existing_banks = self.list_banks()
-        max_banks = DEFAULT_BANK_COUNT
-        
-        if len(existing_banks) >= max_banks:
-            return [bank["id"] for bank in existing_banks[:max_banks]]
-        
-        available_slots = max_banks - len(existing_banks)
-        count = min(count, available_slots)
         
         if count <= 0:
             return [bank["id"] for bank in existing_banks]
@@ -395,9 +403,21 @@ class DigitalRublePlatform:
             bank_id = row["id"]
             bank_ids.append(bank_id)
             from database import DatabaseManager
+            from pathlib import Path
 
             db_path = f"bank_{bank_id}.db"
-            DatabaseManager(db_path)
+            db_file = Path(db_path)
+            try:
+                bank_db = DatabaseManager(db_path)
+                if not db_file.exists():
+                    import time
+                    time.sleep(0.1)
+                    if not db_file.exists():
+                        raise RuntimeError(f"Файл БД {db_path} не был создан после инициализации DatabaseManager")
+            except Exception as e:
+                import logging
+                logging.error(f"Ошибка при создании БД для банка {bank_id}: {e}")
+                raise RuntimeError(f"Не удалось создать БД для банка {bank_id}: {e}")
             
             if self._distributed_enabled and self.node_manager:
                 node_id = f"BANK_{bank_id}"
@@ -410,6 +430,13 @@ class DigitalRublePlatform:
                 )
                 self.node_manager.register_connection(self.node_id, node_id)
                 self.node_manager.register_connection(node_id, self.node_id)
+            
+            existing_blocks = self.db.execute(
+                "SELECT * FROM blocks ORDER BY height ASC",
+                fetchall=True
+            )
+            if existing_blocks:
+                self._replicate_full_ledger_to_bank(bank_db, existing_blocks)
             
             self._log_activity(
                 actor=name,
@@ -447,6 +474,34 @@ class DigitalRublePlatform:
                 if max_id_row and max_id_row["max_id"] is not None:
                     max_user_id = max(max_user_id, max_id_row["max_id"])
         
+        def get_current_max_user_id() -> int:
+            current_max = 0
+            for check_bank in banks:
+                bank_db_path = f"bank_{check_bank['id']}.db"
+                if Path(bank_db_path).exists():
+                    check_bank_db = DatabaseManager(bank_db_path)
+                    max_id_row = check_bank_db.execute(
+                        "SELECT MAX(id) as max_id FROM users",
+                        fetchone=True,
+                    )
+                    if max_id_row and max_id_row["max_id"] is not None:
+                        current_max = max(current_max, max_id_row["max_id"])
+            return current_max
+        
+        def user_exists_in_any_bank(user_id: int) -> bool:
+            for check_bank in banks:
+                bank_db_path = f"bank_{check_bank['id']}.db"
+                if Path(bank_db_path).exists():
+                    check_bank_db = DatabaseManager(bank_db_path)
+                    existing = check_bank_db.execute(
+                        "SELECT id FROM users WHERE id = ?",
+                        (user_id,),
+                        fetchone=True,
+                    )
+                    if existing:
+                        return True
+            return False
+        
         for i in range(count):
             bank = random.choice(banks)
             bank_id = bank["id"]
@@ -474,44 +529,39 @@ class DigitalRublePlatform:
                 raise RuntimeError(f"Не удалось создать кошелек {wallet_address} в ЦБ")
             wallet_id = wallet_id_row["id"]
             
-            next_user_id = max_user_id + i + 1
+            current_max_id = get_current_max_user_id()
+            next_user_id = current_max_id + 1
             
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
             bank_db.execute("PRAGMA foreign_keys = OFF")
             try:
-                existing = bank_db.execute(
-                    "SELECT id FROM users WHERE id = ?",
-                    (next_user_id,),
-                    fetchone=True,
-                )
-                if existing:
-                    bank_db.execute(
-                        """
-                        INSERT INTO users(name, user_type, bank_id, wallet_id, fiat_balance, 
-                                         digital_balance, wallet_status, offline_balance, offline_status)
-                        VALUES (?, ?, ?, ?, 10000, 0, 'CLOSED', 0, 'CLOSED')
-                        """,
-                        (name, user_type, bank_id, wallet_id),
-                    )
-                    user_row = bank_db.execute(
-                        "SELECT id FROM users WHERE name = ? ORDER BY id DESC LIMIT 1",
-                        (name,),
+                while True:
+                    if user_exists_in_any_bank(next_user_id):
+                        next_user_id += 1
+                        continue
+                    
+                    existing_check = bank_db.execute(
+                        "SELECT id FROM users WHERE id = ?",
+                        (next_user_id,),
                         fetchone=True,
                     )
-                    next_user_id = user_row["id"]
-                else:
-                    bank_db.execute(
-                        """
-                        INSERT INTO users(id, name, user_type, bank_id, wallet_id, fiat_balance, 
-                                         digital_balance, wallet_status, offline_balance, offline_status)
-                        VALUES (?, ?, ?, ?, ?, 10000, 0, 'CLOSED', 0, 'CLOSED')
-                        """,
-                        (next_user_id, name, user_type, bank_id, wallet_id),
-                    )
+                    if existing_check:
+                        next_user_id += 1
+                        continue
+                    
+                    break
+                
+                bank_db.execute(
+                    """
+                    INSERT INTO users(id, name, user_type, bank_id, wallet_id, fiat_balance, 
+                                     digital_balance, wallet_status, offline_balance, offline_status)
+                    VALUES (?, ?, ?, ?, ?, 10000, 0, 'CLOSED', 0, 'CLOSED')
+                    """,
+                    (next_user_id, name, user_type, bank_id, wallet_id),
+                )
             finally:
                 bank_db.execute("PRAGMA foreign_keys = ON")
             users.append(next_user_id)
-            max_user_id = max(max_user_id, next_user_id)
             
             self._log_activity(
                 actor=name,
@@ -749,39 +799,121 @@ class DigitalRublePlatform:
                 return True
             return False
 
-    def open_digital_wallet(self, user_id: int) -> None:
+    def open_digital_wallet(self, user_id: int, bank_id: Optional[int] = None) -> None:
         from database import DatabaseManager
-        user = self.get_user(user_id)
-        if user["wallet_status"] == "OPEN":
-            return
+        from pathlib import Path
         
-        bank_id = user["bank_id"]
-        wallet_id = user.get("wallet_id")
+        def find_user_in_any_bank(user_id: int) -> Optional[Dict]:
+            banks = self.list_banks()
+            for bank in banks:
+                bank_db_path = f"bank_{bank['id']}.db"
+                if Path(bank_db_path).exists():
+                    bank_db = DatabaseManager(bank_db_path)
+                    user = bank_db.execute(
+                        "SELECT * FROM users WHERE id = ?",
+                        (user_id,),
+                        fetchone=True,
+                    )
+                    if user:
+                        return dict(user)
+            return None
+        
+        existing_user = find_user_in_any_bank(user_id)
+        
+        if not existing_user:
+            raise ValueError(f"Пользователь {user_id} не найден. Создайте пользователя через 'Управление' -> 'Создать участников'.")
+        
+        user_bank_id = existing_user["bank_id"]
+        
+        if bank_id is not None and bank_id != user_bank_id:
+            banks = self.list_banks()
+            user_bank_name = next((b["name"] for b in banks if b["id"] == user_bank_id), f"Банк {user_bank_id}")
+            raise ValueError(
+                f"Пользователь зарегистрирован в банке '{user_bank_name}' (ID {user_bank_id}). "
+                f"Открытие кошелька должно выполняться через банк регистрации пользователя."
+            )
+        
+        bank_id = user_bank_id
+        user = existing_user
+        user_name = user.get("name") or f"Пользователь {user_id}"
         
         bank_db = DatabaseManager(f"bank_{bank_id}.db")
+        
+        bank_user = bank_db.execute(
+            "SELECT * FROM users WHERE id = ?",
+            (user_id,),
+            fetchone=True,
+        )
+        
+        if not bank_user:
+            raise ValueError(f"Пользователь {user_id} не найден в банке регистрации (ID {bank_id}).")
+        
+        if bank_user["wallet_status"] == "OPEN":
+            return
+        
+        wallet_address = f"WALLET_{user_id}"
+        
+        existing_wallet = self.db.execute(
+            "SELECT id FROM wallets WHERE wallet_address = ?",
+            (wallet_address,),
+            fetchone=True,
+        )
+        
+        if not existing_wallet:
+            self.db.execute(
+                "INSERT INTO wallets(wallet_address, bank_id, balance, wallet_status) VALUES (?, ?, 0, 'CLOSED')",
+                (wallet_address, bank_id),
+            )
+            wallet_row = self.db.execute(
+                "SELECT id FROM wallets WHERE wallet_address = ?",
+                (wallet_address,),
+                fetchone=True,
+            )
+            wallet_id = wallet_row["id"] if wallet_row else None
+        else:
+            wallet_id = existing_wallet["id"]
+        
+        bank_user_dict = dict(bank_user)
+        if not bank_user_dict.get("wallet_id"):
+            bank_db.execute(
+                "UPDATE users SET wallet_id = ? WHERE id = ?",
+                (wallet_id, user_id),
+            )
+        
         bank_db.execute(
             "UPDATE users SET wallet_status = 'OPEN' WHERE id = ?",
             (user_id,),
         )
         
-        if wallet_id:
-            self.db.execute(
-                "UPDATE wallets SET wallet_status = 'OPEN' WHERE id = ?",
-                (wallet_id,),
-            )
+        self.db.execute(
+            "UPDATE wallets SET wallet_status = 'OPEN' WHERE id = ?",
+            (wallet_id,),
+        )
         
         self._log_activity(
-            actor=user["name"],
+            actor=user_name,
             stage="Открытие цифрового кошелька",
-            details="Цифровой кошелек активирован пользователем",
+            details=f"Цифровой кошелек активирован пользователем через банк регистрации (ID {bank_id}). Кошелек хранится в БД ЦБ.",
             context="Пользователь",
         )
 
-    def exchange_to_digital(self, user_id: int, amount: float) -> None:
+    def exchange_to_digital(self, user_id: int, amount: float, bank_id: Optional[int] = None) -> None:
         from database import DatabaseManager
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной")
-        user = self.get_user(user_id)
+        
+        if bank_id is None:
+            user = self.get_user(user_id)
+            bank_id = user["bank_id"]
+        else:
+            bank_db = DatabaseManager(f"bank_{bank_id}.db")
+            row = bank_db.execute("SELECT * FROM users WHERE id = ?", (user_id,), fetchone=True)
+            if not row:
+                raise ValueError(f"Пользователь {user_id} не найден в банке {bank_id}")
+            user = dict(row)
+            bank = self._get_bank(bank_id)
+            user["bank_name"] = bank["name"]
+        
         if user["wallet_status"] != "OPEN":
             raise ValueError("Необходимо открыть цифровой кошелек")
         if user["fiat_balance"] < amount:
@@ -789,7 +921,6 @@ class DigitalRublePlatform:
             self._log_failed_transaction(None, "INSUFFICIENT_FIAT", error_msg)
             raise ValueError(error_msg)
         try:
-            bank_id = user["bank_id"]
             wallet_id = user.get("wallet_id")
             bank_db = DatabaseManager(f"bank_{bank_id}.db")
             
@@ -900,8 +1031,30 @@ class DigitalRublePlatform:
         if user["offline_status"] != "OPEN":
             raise ValueError("Оффлайн кошелек не активирован")
         utxo_balance = self._get_utxo_balance(user_id)
+        digital_balance = float(user.get("digital_balance") or 0.0)
+        total_available = utxo_balance + digital_balance
+        
+        if total_available < amount:
+            error_msg = f"Недостаточно средств для пополнения оффлайн кошелька: доступно {total_available:.2f}, требуется {amount:.2f}"
+            self._log_failed_transaction(None, "INSUFFICIENT_DIGITAL_BALANCE", error_msg)
+            raise ValueError(error_msg)
+        
         if utxo_balance < amount:
             deficit = amount - utxo_balance
+            
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{user['bank_id']}.db")
+            bank_db.execute(
+                "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                (deficit, user_id),
+            )
+            wallet_id = user.get("wallet_id")
+            if wallet_id:
+                self.db.execute(
+                    "UPDATE wallets SET balance = balance - ? WHERE id = ?",
+                    (deficit, wallet_id),
+                )
+            
             mint_ctx = TransactionContext(
                 sender_id=user_id,
                 receiver_id=user_id,
@@ -919,6 +1072,7 @@ class DigitalRublePlatform:
                 details=f"Создано UTXO {new_utxo_id} на {deficit:.2f} ЦР для пополнения оффлайн кошелька",
                 context="Оффлайн",
             )
+        
         try:
             self.metrics.increment("offline_reserved", amount)
             context = TransactionContext(
@@ -933,6 +1087,35 @@ class DigitalRublePlatform:
             tx = self._create_transaction_record(context, status="CONFIRMED")
             self._spend_utxos(user_id, amount, tx["id"])
             self._create_utxo(user_id, amount, tx["id"])
+            
+            from database import DatabaseManager
+            bank_db = DatabaseManager(f"bank_{user['bank_id']}.db")
+            
+            if utxo_balance >= amount:
+                bank_db.execute(
+                    "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                    (amount, user_id),
+                )
+                wallet_id = user.get("wallet_id")
+                if wallet_id:
+                    self.db.execute(
+                        "UPDATE wallets SET balance = balance - ? WHERE id = ?",
+                        (amount, wallet_id),
+                    )
+            else:
+                remaining_to_deduct = utxo_balance
+                if remaining_to_deduct > 0:
+                    bank_db.execute(
+                        "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                        (remaining_to_deduct, user_id),
+                    )
+                    wallet_id = user.get("wallet_id")
+                    if wallet_id:
+                        self.db.execute(
+                            "UPDATE wallets SET balance = balance - ? WHERE id = ?",
+                            (remaining_to_deduct, wallet_id),
+                        )
+            
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
             block_signature = _sign("CBR", 0, block.hash)
             self.db.execute(
@@ -955,13 +1138,10 @@ class DigitalRublePlatform:
             )
 
             try:
-                from database import DatabaseManager
-                bank_db = DatabaseManager(f"bank_{user['bank_id']}.db")
                 bank_db.execute(
                     "UPDATE users SET offline_balance = offline_balance + ? WHERE id = ?",
                     (amount, user_id),
                 )
-                wallet_id = user.get("wallet_id")
                 if wallet_id:
                     self.db.execute(
                         "UPDATE wallets SET offline_balance = offline_balance + ? WHERE id = ?",
@@ -978,9 +1158,9 @@ class DigitalRublePlatform:
     ) -> Dict:
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной")
-        if sender_id == receiver_id:
-            raise ValueError("Нельзя отправить перевод самому себе")
         sender = self.get_user(sender_id)
+        if sender_id == receiver_id and sender.get("user_type") != "GOVERNMENT":
+            raise ValueError("Нельзя отправить перевод самому себе")
         receiver = self.get_user(receiver_id)
         if sender["wallet_status"] != "OPEN":
             raise ValueError("У отправителя не открыт цифровой кошелек")
@@ -988,9 +1168,12 @@ class DigitalRublePlatform:
             raise ValueError("У получателя не открыт цифровой кошелек")
 
         utxo_balance = self._get_utxo_balance(sender_id)
-        if utxo_balance < amount:
-            error_msg = f"Недостаточно UTXО для транзакции: доступно {utxo_balance:.2f}, требуется {amount:.2f}"
-            self._log_failed_transaction(None, "INSUFFICIENT_UTXO", error_msg)
+        digital_balance = float(sender.get("digital_balance") or 0.0)
+        total_available = utxo_balance + digital_balance
+        
+        if total_available < amount:
+            error_msg = f"Недостаточно средств для транзакции: доступно {total_available:.2f} (UTXO: {utxo_balance:.2f}, баланс: {digital_balance:.2f}), требуется {amount:.2f}"
+            self._log_failed_transaction(None, "INSUFFICIENT_FUNDS", error_msg)
             self._log_activity(
                 actor=sender["name"],
                 stage="Валидация ФО",
@@ -1063,78 +1246,74 @@ class DigitalRublePlatform:
             )
 
             wallet_id = sender.get("wallet_id")
-            rows = []
+            selected_utxos: List[Dict] = []
             if wallet_id:
-                rows = self.db.execute(
-                    """
-                    SELECT id, amount FROM utxos
-                    WHERE owner_id = ? AND status = 'UNSPENT' 
-                    AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
-                    ORDER BY amount ASC
-                    """,
-                    (wallet_id,),
-                    fetchall=True,
-                ) or []
+                selected_utxos = self._get_utxos(sender_id, amount)
 
-            utxo_id = None
-            utxo_amount = 0.0
-            candidate = dict(rows[0]) if rows else None
+            locked_sum = 0.0
+            if selected_utxos:
+                for utxo in selected_utxos:
+                    utxo_id = utxo["id"]
+                    self.db.execute(
+                        """
+                        UPDATE utxos
+                        SET locked_by_tx_id = ?, locked_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND status = 'UNSPENT'
+                        AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
+                        """,
+                        (tx["id"], utxo_id),
+                    )
+                    locked_check = self.db.execute(
+                        "SELECT locked_by_tx_id, status FROM utxos WHERE id = ?",
+                        (utxo_id,),
+                        fetchone=True,
+                    )
+                    if not locked_check or locked_check["locked_by_tx_id"] != tx["id"] or locked_check["status"] != "UNSPENT":
+                        error_msg = f"UTXO {utxo_id} уже заблокирован другой транзакцией или потрачен (защита от двойного списания)"
+                        self._log_failed_transaction(None, "UTXO_LOCKED", error_msg)
+                        raise ValueError(error_msg)
+                    locked_sum += float(utxo["amount"])
 
-            if not candidate:
-                offline_balance = float(sender.get("offline_balance") or 0.0)
-                if offline_balance < amount:
+            if locked_sum < amount:
+                deficit = amount - locked_sum
+                offline_balance_user = float(sender.get("offline_balance") or 0.0)
+                wallet_balance = 0.0
+                if wallet_id:
+                    wallet = self.db.execute(
+                        "SELECT offline_balance FROM wallets WHERE id = ?",
+                        (wallet_id,),
+                        fetchone=True,
+                    )
+                    if wallet:
+                        wallet_balance = float(wallet["offline_balance"] if wallet["offline_balance"] is not None else 0.0)
+                available_offline = max(offline_balance_user, wallet_balance)
+                if available_offline < deficit:
                     error_msg = (
                         f"Недостаточно средств в оффлайн кошельке: "
-                        f"доступно {offline_balance:.2f}, требуется {amount:.2f}"
+                        f"доступно {available_offline:.2f}, требуется {deficit:.2f}"
                     )
                     self._log_failed_transaction(None, "INSUFFICIENT_OFFLINE_BALANCE", error_msg)
                     raise ValueError(error_msg)
-
-                from database import DatabaseManager
-                bank_db = DatabaseManager(f"bank_{sender['bank_id']}.db")
-                bank_db.execute(
-                    "UPDATE users SET offline_balance = offline_balance - ? WHERE id = ?",
-                    (amount, sender_id),
-                )
-                if wallet_id:
-                    self.db.execute(
-                        "UPDATE wallets SET offline_balance = offline_balance - ? WHERE id = ?",
-                        (amount, wallet_id),
-                    )
-            else:
-                utxo_id = candidate["id"]
-                utxo_amount = float(candidate["amount"])
-
-                lock_result = self.db.execute(
-                    """
-                    UPDATE utxos
-                    SET locked_by_tx_id = ?, locked_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND (locked_by_tx_id IS NULL OR locked_at < datetime('now', '-5 minutes'))
-                    """,
-                    (tx["id"], utxo_id),
-                )
-
-                locked_check = self.db.execute(
-                    "SELECT locked_by_tx_id FROM utxos WHERE id = ?",
-                    (utxo_id,),
-                    fetchone=True,
-                )
-                if not locked_check or locked_check["locked_by_tx_id"] != tx["id"]:
-                    error_msg = f"UTXO {utxo_id} уже заблокирован другой транзакцией (защита от двойного списания)"
-                    self._log_failed_transaction(None, "UTXO_LOCKED", error_msg)
-                    raise ValueError(error_msg)
-
+                # создаем дополнительный UTXO на дефицит и сразу блокируем
+                new_utxo_id = self._create_utxo(sender_id, deficit, tx["id"])
                 self.db.execute(
                     """
                     UPDATE utxos
-                    SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP,
-                        locked_by_tx_id = NULL, locked_at = NULL
+                    SET locked_by_tx_id = ?, locked_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (tx["id"], utxo_id),
+                    (tx["id"], new_utxo_id),
                 )
+                locked_sum += deficit
 
-            new_utxo_amount = max(0.01, round(amount * 0.4, 2))
+            if locked_sum < amount:
+                error_msg = (
+                    f"Недостаточно UTXO для оффлайн транзакции: заблокировано {locked_sum:.2f}, требуется {amount:.2f}"
+                )
+                self._log_failed_transaction(None, "INSUFFICIENT_UTXO", error_msg)
+                raise ValueError(error_msg)
+
+            new_utxo_amount = max(0.01, round(amount * 0.1, 2))
             self._create_utxo(sender_id, new_utxo_amount, tx["id"])
             self._log_activity(
                 actor=sender["name"],
@@ -1228,6 +1407,109 @@ class DigitalRublePlatform:
                     bank_name=bank["name"],
                     conflict=False,
                 )
+                
+                from database import DatabaseManager
+                
+                sender_wallet_id = sender.get("wallet_id")
+                
+                locked_total = 0.0
+                if sender_wallet_id:
+                    locked_utxos = self.db.execute(
+                        """
+                        SELECT id, amount FROM utxos
+                        WHERE owner_id = ? AND locked_by_tx_id = ? AND status = 'UNSPENT'
+                        """,
+                        (sender_wallet_id, row["id"]),
+                        fetchall=True,
+                    ) or []
+                    
+                    for utxo_row in locked_utxos:
+                        utxo_id = utxo_row["id"]
+                        locked_total += float(utxo_row["amount"])
+                        self.db.execute(
+                            """
+                            UPDATE utxos
+                            SET status = 'SPENT', spent_tx_id = ?, spent_at = CURRENT_TIMESTAMP,
+                                locked_by_tx_id = NULL, locked_at = NULL
+                            WHERE id = ?
+                            """,
+                            (row["id"], utxo_id),
+                        )
+                
+                if locked_total < row["amount"]:
+                    shortfall = row["amount"] - locked_total
+                    error_message = (
+                        f"Недостаточно заблокированных UTXO для оффлайн транзакции {row['id']}: "
+                        f"заблокировано {locked_total:.2f}, требуется {row['amount']:.2f}. Дефицит {shortfall:.2f}"
+                    )
+                    conflicts += 1
+                    self.db.execute(
+                        "UPDATE offline_transactions SET status = 'КОНФЛИКТ', conflict_reason = ? WHERE id = ?",
+                        (error_message, row["offline_id"]),
+                    )
+                    self._log_failed_transaction(row["id"], "OFFLINE_UTXO_DEFICIT", error_message)
+                    continue
+                
+                receiver_wallet_id = receiver.get("wallet_id")
+                if receiver_wallet_id:
+                    self.db.execute(
+                        "UPDATE wallets SET offline_balance = offline_balance + ? WHERE id = ?",
+                        (row["amount"], receiver_wallet_id),
+                    )
+                
+                if sender_wallet_id:
+                    wallet_offline_balance = self.db.execute(
+                        "SELECT offline_balance FROM wallets WHERE id = ?",
+                        (sender_wallet_id,),
+                        fetchone=True,
+                    )
+                    current_wallet_offline = float(wallet_offline_balance["offline_balance"] if wallet_offline_balance and wallet_offline_balance["offline_balance"] is not None else 0.0)
+                    if current_wallet_offline < row["amount"]:
+                        error_message = (
+                            f"Недостаточно оффлайн баланса кошелька {sender_wallet_id}: "
+                            f"доступно {current_wallet_offline:.2f}, требуется {row['amount']:.2f}"
+                        )
+                        conflicts += 1
+                        self.db.execute(
+                            "UPDATE offline_transactions SET status = 'КОНФЛИКТ', conflict_reason = ? WHERE id = ?",
+                            (error_message, row["offline_id"]),
+                        )
+                        self._log_failed_transaction(row["id"], "OFFLINE_BALANCE_DEFICIT", error_message)
+                        continue
+                    self.db.execute(
+                        "UPDATE wallets SET offline_balance = offline_balance - ? WHERE id = ?",
+                        (row["amount"], sender_wallet_id),
+                    )
+                
+                sender_bank_db = DatabaseManager(f"bank_{sender['bank_id']}.db")
+                current_user_offline = sender_bank_db.execute(
+                    "SELECT offline_balance FROM users WHERE id = ?",
+                    (row["sender_id"],),
+                    fetchone=True,
+                )
+                current_user_offline_val = float(current_user_offline["offline_balance"] if current_user_offline and current_user_offline["offline_balance"] is not None else 0.0)
+                if current_user_offline_val < row["amount"]:
+                    error_message = (
+                        f"Недостаточно оффлайн баланса пользователя {row['sender_id']} в ФО: "
+                        f"доступно {current_user_offline_val:.2f}, требуется {row['amount']:.2f}"
+                    )
+                    conflicts += 1
+                    self.db.execute(
+                        "UPDATE offline_transactions SET status = 'КОНФЛИКТ', conflict_reason = ? WHERE id = ?",
+                        (error_message, row["offline_id"]),
+                    )
+                    self._log_failed_transaction(row["id"], "OFFLINE_BALANCE_DEFICIT_BANK", error_message)
+                    continue
+                sender_bank_db.execute(
+                    "UPDATE users SET offline_balance = offline_balance - ? WHERE id = ?",
+                    (row["amount"], row["sender_id"]),
+                )
+                
+                receiver_bank_db = DatabaseManager(f"bank_{receiver['bank_id']}.db")
+                receiver_bank_db.execute(
+                    "UPDATE users SET offline_balance = offline_balance + ? WHERE id = ?",
+                    (row["amount"], row["receiver_id"]),
+                )
             except Exception as e:
                 conflicts += 1
                 self._log_failed_transaction(row["id"], "SYNC_ERROR", str(e))
@@ -1238,10 +1520,68 @@ class DigitalRublePlatform:
         return {"processed": processed, "conflicts": conflicts}
 
     def _ensure_utxo_funds(self, owner_id: int, amount: float, bank_id: int, note: str) -> None:
-        balance = self._get_utxo_balance(owner_id)
-        if balance >= amount:
+        utxo_balance = self._get_utxo_balance(owner_id)
+        if utxo_balance >= amount:
             return
-        deficit = amount - balance
+        deficit = amount - utxo_balance
+        user = self.get_user(owner_id)
+        wallet_id = user.get("wallet_id")
+        if not wallet_id:
+            error_msg = f"У пользователя {owner_id} нет цифрового кошелька"
+            self._log_error("NO_WALLET", error_msg, f"user_id={owner_id}")
+            raise ValueError(error_msg)
+        
+        wallet = self.db.execute(
+            "SELECT balance FROM wallets WHERE id = ?",
+            (wallet_id,),
+            fetchone=True,
+        )
+        if not wallet:
+            error_msg = f"Кошелек {wallet_id} не найден в БД ЦБ"
+            self._log_error("WALLET_NOT_FOUND", error_msg, f"wallet_id={wallet_id}")
+            raise ValueError(error_msg)
+        
+        wallet_balance = float(wallet["balance"] if wallet["balance"] is not None else 0.0)
+        from database import DatabaseManager
+        sender_bank_db = DatabaseManager(f"bank_{bank_id}.db")
+        bank_balance_row = sender_bank_db.execute(
+            "SELECT digital_balance FROM users WHERE id = ?",
+            (owner_id,),
+            fetchone=True,
+        )
+        bank_balance = float(bank_balance_row["digital_balance"] if bank_balance_row and bank_balance_row["digital_balance"] is not None else 0.0)
+
+        available_total = wallet_balance + bank_balance
+        if available_total < deficit:
+            error_msg = (
+                f"Недостаточно средств: кошелек {wallet_id} имеет {wallet_balance:.2f}, "
+                f"цифровой баланс в ФО {bank_balance:.2f}, требуется {deficit:.2f}"
+            )
+            self._log_error("INSUFFICIENT_WALLET_BALANCE", error_msg, f"user_id={owner_id}, wallet_id={wallet_id}")
+            raise ValueError(error_msg)
+
+        take_from_wallet = min(wallet_balance, deficit)
+        remaining = deficit - take_from_wallet
+        take_from_bank = min(bank_balance, remaining)
+        if remaining > take_from_bank:
+            error_msg = (
+                f"Недостаточно средств для выпуска UTXO: нужно {deficit:.2f}, "
+                f"кошелек {wallet_balance:.2f}, банк {bank_balance:.2f}"
+            )
+            self._log_error("INSUFFICIENT_WALLET_BALANCE", error_msg, f"user_id={owner_id}, wallet_id={wallet_id}")
+            raise ValueError(error_msg)
+
+        if take_from_wallet > 0:
+            self.db.execute(
+                "UPDATE wallets SET balance = balance - ? WHERE id = ?",
+                (take_from_wallet, wallet_id),
+            )
+        if take_from_bank > 0:
+            sender_bank_db.execute(
+                "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                (take_from_bank, owner_id),
+            )
+        
         mint_ctx = TransactionContext(
             sender_id=owner_id,
             receiver_id=owner_id,
@@ -1268,13 +1608,65 @@ class DigitalRublePlatform:
             else:
                 if context.tx_type != "OFFLINE":
                     self._ensure_utxo_funds(context.sender_id, context.amount, context.bank_id, "онлайн")
+                
                 change, _ = self._spend_utxos(context.sender_id, context.amount, tx["id"])
                 self._create_utxo(context.receiver_id, context.amount, tx["id"])
                 if change > 0:
                     self._create_utxo(context.sender_id, change, tx["id"])
                 
+                if context.tx_type != "OFFLINE":
+                    sender = self.get_user(context.sender_id)
+                    receiver = self.get_user(context.receiver_id)
+                    
+                    sender_wallet_id = sender.get("wallet_id")
+                    if sender_wallet_id:
+                        sender_wallet_row = self.db.execute(
+                            "SELECT balance FROM wallets WHERE id = ?",
+                            (sender_wallet_id,),
+                            fetchone=True,
+                        )
+                        sender_wallet_balance = float(sender_wallet_row["balance"] if sender_wallet_row and sender_wallet_row["balance"] is not None else 0.0)
+                        if sender_wallet_balance < context.amount:
+                            error_msg = f"Недостаточно средств в кошельке отправителя {sender_wallet_id}: доступно {sender_wallet_balance:.2f}, требуется {context.amount:.2f}"
+                            self._log_failed_transaction(tx["id"], "WALLET_BALANCE_NEGATIVE", error_msg)
+                            raise ValueError(error_msg)
+                        self.db.execute(
+                            "UPDATE wallets SET balance = balance - ? WHERE id = ?",
+                            (context.amount, sender_wallet_id),
+                        )
+                    
+                    receiver_wallet_id = receiver.get("wallet_id")
+                    if receiver_wallet_id:
+                        self.db.execute(
+                            "UPDATE wallets SET balance = balance + ? WHERE id = ?",
+                            (context.amount, receiver_wallet_id),
+                        )
+                    
+                    from database import DatabaseManager
+                    sender_bank_db = DatabaseManager(f"bank_{sender['bank_id']}.db")
+                    sender_bank_balance_row = sender_bank_db.execute(
+                        "SELECT digital_balance FROM users WHERE id = ?",
+                        (context.sender_id,),
+                        fetchone=True,
+                    )
+                    sender_bank_balance = float(sender_bank_balance_row["digital_balance"] if sender_bank_balance_row and sender_bank_balance_row["digital_balance"] is not None else 0.0)
+                    if sender_bank_balance < context.amount:
+                        error_msg = f"Недостаточно цифрового баланса в ФО для пользователя {context.sender_id}: доступно {sender_bank_balance:.2f}, требуется {context.amount:.2f}"
+                        self._log_failed_transaction(tx["id"], "BANK_BALANCE_NEGATIVE", error_msg)
+                        raise ValueError(error_msg)
+                    sender_bank_db.execute(
+                        "UPDATE users SET digital_balance = digital_balance - ? WHERE id = ?",
+                        (context.amount, context.sender_id),
+                    )
+                    
+                    receiver_bank_db = DatabaseManager(f"bank_{receiver['bank_id']}.db")
+                    receiver_bank_db.execute(
+                        "UPDATE users SET digital_balance = digital_balance + ? WHERE id = ?",
+                        (context.amount, context.receiver_id),
+                    )
+                
                 if self.tx_logger:
-                    self.tx_logger.log_utxo_processing(tx["id"], context.sender_id, context.receiver_id, context.amount, change            )
+                    self.tx_logger.log_utxo_processing(tx["id"], context.sender_id, context.receiver_id, context.amount, change)
             
             block = self.ledger.append_block([tx], signer="ЦБ РФ")
             block_signature = _sign("CBR", 0, block.hash)
@@ -1570,6 +1962,9 @@ class DigitalRublePlatform:
 
                 if utxo_amount > remaining:
                     change = utxo_amount - remaining
+                    max_change = round(amount * 0.1, 2)
+                    if change > max_change:
+                        change = max_change
                     self.db.execute(
                         """
                         UPDATE utxos
@@ -1787,6 +2182,101 @@ class DigitalRublePlatform:
                     local_db.execute("PRAGMA foreign_keys = ON")
                 except Exception:
                     pass
+
+    def _replicate_full_ledger_to_bank(self, bank_db, blocks: List) -> None:
+        from database import DatabaseManager
+        
+        bank_db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for block_row in blocks:
+                block_dict = dict(block_row)
+                height = block_dict["height"]
+                
+                exists = bank_db.execute(
+                    "SELECT id FROM blocks WHERE height = ?",
+                    (height,),
+                    fetchone=True,
+                )
+                if exists:
+                    continue
+                
+                bank_db.execute(
+                    """
+                    INSERT INTO blocks(height, hash, previous_hash, merkle_root, timestamp,
+                                       signer, nonce, duration_ms, tx_count, block_signature)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        block_dict["height"],
+                        block_dict["hash"],
+                        block_dict["previous_hash"],
+                        block_dict["merkle_root"],
+                        block_dict["timestamp"],
+                        block_dict["signer"],
+                        block_dict["nonce"],
+                        block_dict["duration_ms"],
+                        block_dict["tx_count"],
+                        block_dict.get("block_signature"),
+                    ),
+                )
+                
+                block_id_row = bank_db.execute(
+                    "SELECT id FROM blocks WHERE height = ?", (height,), fetchone=True
+                )
+                if not block_id_row:
+                    continue
+                
+                block_id = block_id_row["id"]
+                
+                cbr_block_id_row = self.db.execute(
+                    "SELECT id FROM blocks WHERE height = ?", (height,), fetchone=True
+                )
+                if cbr_block_id_row:
+                    cbr_block_id = cbr_block_id_row["id"]
+                    all_tx_rows = self.db.execute(
+                        """
+                        SELECT t.* FROM transactions t
+                        JOIN block_transactions bt ON bt.tx_id = t.id
+                        WHERE bt.block_id = ?
+                        """,
+                        (cbr_block_id,),
+                        fetchall=True,
+                    )
+                    all_txs = [dict(r) for r in all_tx_rows] if all_tx_rows else []
+                    
+                    for tx in all_txs:
+                        bank_db.execute(
+                            """
+                            INSERT OR IGNORE INTO transactions(id, sender_id, receiver_id, amount,
+                                                               tx_type, channel, status, timestamp,
+                                                               bank_id, hash, offline_flag, notes,
+                                                               user_sig, bank_sig, cbr_sig)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                tx["id"],
+                                tx["sender_id"],
+                                tx["receiver_id"],
+                                tx["amount"],
+                                tx["tx_type"],
+                                tx["channel"],
+                                tx["status"],
+                                tx["timestamp"],
+                                tx["bank_id"],
+                                tx["hash"],
+                                tx.get("offline_flag", 0),
+                                tx.get("notes", ""),
+                                tx.get("user_sig"),
+                                tx.get("bank_sig"),
+                                tx.get("cbr_sig"),
+                            ),
+                        )
+                        bank_db.execute(
+                            "INSERT OR IGNORE INTO block_transactions(block_id, tx_id) VALUES (?, ?)",
+                            (block_id, tx["id"]),
+                        )
+        finally:
+            bank_db.execute("PRAGMA foreign_keys = ON")
 
     def request_emission(self, bank_id: int, amount: float) -> str:
         if amount <= 0:

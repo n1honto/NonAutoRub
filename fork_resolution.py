@@ -16,7 +16,7 @@ class ForkInfo:
     other_chain_length: int
     our_tip_hash: str
     other_tip_hash: str
-    divergence_point: int  # Высота, на которой произошло расхождение
+    divergence_point: int
 
 
 class ForkResolver:
