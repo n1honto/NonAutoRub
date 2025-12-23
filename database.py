@@ -1,5 +1,8 @@
 import json
+import os
+import shutil
 import sqlite3
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
@@ -8,7 +11,7 @@ from typing import Any, Iterable
 
 class DatabaseManager:
     def __init__(self, db_name: str = "digital_ruble.db") -> None:
-        self.db_path = Path(db_name).resolve()
+        self.db_path = self._resolve_db_path(db_name)
         self._lock = RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -20,6 +23,28 @@ class DatabaseManager:
         self._bootstrap_schema()
         self._backfill_legacy_schema()
         self._create_indexes()
+
+    def _resolve_db_path(self, db_name: str) -> Path:
+        db_path = Path(db_name)
+        db_filename = db_path.name
+        data_dir_override = os.getenv("DR_DATA_DIR")
+        if data_dir_override:
+            base_dir = Path(data_dir_override)
+        elif getattr(sys, "frozen", False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).resolve().parent
+        target = db_path if db_path.is_absolute() else base_dir / db_filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if getattr(sys, "frozen", False):
+            bundle_dir = Path(getattr(sys, "_MEIPASS", base_dir))
+            bundled_candidate = bundle_dir / db_filename if not db_path.is_absolute() else db_path
+            if bundled_candidate.exists() and not target.exists():
+                try:
+                    shutil.copy2(bundled_candidate, target)
+                except Exception:
+                    pass
+        return target.resolve()
     
     def _is_central_bank_database(self) -> bool:
         db_name = self.db_path.name.lower()

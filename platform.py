@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import hashlib
@@ -31,8 +34,21 @@ except ImportError:
 
 DEFAULT_BANK_COUNT = 4
 
+def _runtime_data_dir() -> Path:
+    data_dir = os.getenv("DR_DATA_DIR")
+    if data_dir:
+        return Path(data_dir)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+_DATA_DIR = _runtime_data_dir()
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_PATH = _DATA_DIR / "digital_ruble.log"
+
 logging.basicConfig(
-    filename="digital_ruble.log",
+    filename=str(_LOG_PATH),
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
@@ -303,6 +319,23 @@ class DigitalRublePlatform:
         
         banks = self.list_banks()
         bank_db_connections = []
+        def _table_exists(table: str) -> bool:
+            try:
+                row = self.db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                    (table,),
+                    fetchone=True,
+                )
+                return bool(row)
+            except Exception:
+                return False
+        def _safe_delete(table: str) -> None:
+            if not _table_exists(table):
+                return
+            try:
+                self.db.execute(f"DELETE FROM {table}")
+            except Exception:
+                pass
         
         for bank in banks:
             bank_id = bank["id"]
@@ -337,25 +370,29 @@ class DigitalRublePlatform:
         
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
-            self.db.execute("DELETE FROM offline_transactions")
-            self.db.execute("DELETE FROM block_transactions")
-            self.db.execute("DELETE FROM utxos")
+            _safe_delete("offline_transactions")
+            _safe_delete("block_transactions")
+            _safe_delete("utxos")
             
-            self.db.execute("DELETE FROM consensus_events")
-            self.db.execute("DELETE FROM activity_log")
-            self.db.execute("DELETE FROM metrics")
-            self.db.execute("DELETE FROM failed_transactions")
-            self.db.execute("DELETE FROM system_errors")
+            _safe_delete("consensus_events")
+            _safe_delete("activity_log")
+            _safe_delete("metrics")
+            _safe_delete("failed_transactions")
+            _safe_delete("system_errors")
             
-            self.db.execute("DELETE FROM smart_contracts")
-            self.db.execute("DELETE FROM issuance_requests")
-            self.db.execute("DELETE FROM government_institutions")
+            _safe_delete("smart_contracts")
+            _safe_delete("issuance_requests")
+            _safe_delete("government_institutions")
             
-            self.db.execute("DELETE FROM transactions")
-            self.db.execute("DELETE FROM wallets")
+            _safe_delete("transactions")
+            _safe_delete("wallets")
             
-            self.db.execute("DELETE FROM blocks WHERE height > 0")
-            self.db.execute("DELETE FROM banks")
+            if _table_exists("blocks"):
+                try:
+                    self.db.execute("DELETE FROM blocks WHERE height > 0")
+                except Exception:
+                    pass
+            _safe_delete("banks")
             
             if self._distributed_enabled and self.node_manager:
                 try:
